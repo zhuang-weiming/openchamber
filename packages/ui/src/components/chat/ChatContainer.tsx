@@ -27,6 +27,8 @@ import type { PermissionRequest } from '@/types/permission';
 import type { QuestionRequest } from '@/types/question';
 import { cn, formatDirectoryName } from '@/lib/utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { AvatarPanel } from '@/components/sections/openchamber/AvatarPanel';
 import {
     collectVisibleSessionIdsForBlockingRequests,
     flattenBlockingRequests,
@@ -550,6 +552,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ autoOpenDraft = tr
     const isDesktopExpandedInput = isExpandedInput && !isMobile;
     const useCompactDraftLayout = isMobile || isVSCode || chatSurfaceMode === 'mini-chat';
     const messageListRef = React.useRef<MessageListHandle | null>(null);
+    const avatarEnabled = useConfigStore((state) => state.avatarEnabled);
+    const avatarServerUrl = useConfigStore((state) => state.avatarServerUrl);
     const draftProjectLabel = React.useMemo(() => {
         const selectedProject = newSessionDraft?.selectedProjectId
             ? projects.find((project) => project.id === newSessionDraft.selectedProjectId) ?? null
@@ -937,6 +941,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ autoOpenDraft = tr
 	return (
 		<div className="relative flex flex-col h-full bg-background">
 			{returnToParentButton}
+			{avatarEnabled && avatarServerUrl && !isMobile && (
+				<div className="pointer-events-none absolute right-3 top-3 z-20">
+					<div className="pointer-events-auto">
+						<AvatarPanel side="right" />
+					</div>
+				</div>
+			)}
 			<ChatViewport
 				key={currentSessionId}
 				currentSessionId={currentSessionId}

@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { getAvatarAudioBridge } from '@/lib/voice/avatarAudioBridge';
 
 interface ServerTTSStatusCache {
   available: boolean;
@@ -141,6 +142,9 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
   const openaiApiKey = useConfigStore((state) => state.openaiApiKey);
   const openaiCompatibleUrl = useConfigStore((state) => state.openaiCompatibleUrl);
   const openaiCompatibleApiKey = useConfigStore((state) => state.openaiCompatibleApiKey);
+  const avatarServerUrl = useConfigStore((state) => state.avatarServerUrl);
+  const avatarEnabled = useConfigStore((state) => state.avatarEnabled);
+  const avatarAudioOffsetMs = useConfigStore((state) => state.avatarAudioOffsetMs);
 
   // Check if server TTS is available
   const checkAvailability = useCallback(async (): Promise<boolean> => {
@@ -298,7 +302,15 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
       // Decode audio data using the same context we unlocked earlier
       console.log('[useServerTTS] Decoding audio data...');
       const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-      
+
+      // Mirror this AudioBuffer to the avatar backend so the digital-human
+      // mouth can move in sync with what is about to play through the speaker.
+      // Failure here is non-fatal: TTS audio still plays.
+      if (avatarEnabled && avatarServerUrl) {
+        const bridge = getAvatarAudioBridge();
+        bridge.feedAudioBuffer(audioBuffer);
+      }
+
       // Create source node
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
@@ -317,7 +329,7 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
       source.connect(gainNode);
       gainNode.connect(ctx.destination);
       audioSourceRef.current = source;
-      
+
       // Set up event handlers
       source.onended = () => {
         console.log('[useServerTTS] Audio playback ended');
@@ -325,12 +337,22 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
         audioSourceRef.current = null;
         options?.onEnd?.();
       };
-      
-      // Start playback
+
+      // Start playback. We honor `avatarAudioOffsetMs` by scheduling the
+      // speaker start a few hundred milliseconds into the future so the
+      // mouth animation (which carries its own per-frame inference latency
+      // inside the avatar backend) catches up before sound is heard.
       console.log('[useServerTTS] Starting audio playback via Web Audio API...');
       setIsPlaying(true);
       options?.onStart?.();
-      source.start(0);
+      const offsetSeconds = avatarEnabled && avatarServerUrl
+        ? Math.max(0, avatarAudioOffsetMs) / 1000
+        : 0;
+      if (offsetSeconds > 0) {
+        source.start(ctx.currentTime + offsetSeconds);
+      } else {
+        source.start(0);
+      }
       
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
@@ -344,7 +366,7 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
       options?.onError?.(errorMsg);
       setIsPlaying(false);
     }
-  }, [stop, currentProviderId, currentModelId, openaiApiKey, openaiCompatibleApiKey]);
+  }, [stop, currentProviderId, currentModelId, openaiApiKey, openaiCompatibleApiKey, avatarEnabled, avatarServerUrl, avatarAudioOffsetMs]);
 
   // Cleanup on unmount
   useEffect(() => {

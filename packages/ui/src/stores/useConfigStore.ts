@@ -672,6 +672,11 @@ interface ConfigStore {
     openaiCompatibleApiKey: string;
     openaiCompatibleVoice: string;
     openaiCompatibleTtsModel: string;
+    // Avatar settings (LiveTalking / MuseTalk backend)
+    avatarServerUrl: string;
+    avatarImageDataUrl: string;
+    avatarEnabled: boolean;
+    avatarAudioOffsetMs: number;
     // STT (speech-to-text) settings
     sttProvider: 'browser' | 'server' | 'wasm';
     sttServerUrl: string;
@@ -701,6 +706,10 @@ interface ConfigStore {
     setOpenaiCompatibleApiKey: (apiKey: string) => void;
     setOpenaiCompatibleVoice: (voice: string) => void;
     setOpenaiCompatibleTtsModel: (model: string) => void;
+    setAvatarServerUrl: (url: string) => void;
+    setAvatarImageDataUrl: (dataUrl: string) => void;
+    setAvatarEnabled: (enabled: boolean) => void;
+    setAvatarAudioOffsetMs: (ms: number) => void;
     setSttProvider: (provider: 'browser' | 'server' | 'wasm') => void;
     setSttServerUrl: (url: string) => void;
     setSttApiKey: (apiKey: string) => void;
@@ -897,6 +906,39 @@ export const useConfigStore = create<ConfigStore>()(
                         if (saved && saved !== 'speaches-ai/Kokoro-82M-v1.0-ONNX') return saved;
                     }
                     return 'kokoro';
+                })(),
+                // Avatar backend (LiveTalking / MuseTalk). Empty URL disables the feature.
+                avatarServerUrl: (() => {
+                    if (typeof window !== 'undefined') {
+                        const saved = localStorage.getItem('avatarServerUrl');
+                        if (saved) return saved;
+                    }
+                    return '';
+                })(),
+                avatarImageDataUrl: (() => {
+                    if (typeof window !== 'undefined') {
+                        const saved = localStorage.getItem('avatarImageDataUrl');
+                        if (saved) return saved;
+                    }
+                    return '';
+                })(),
+                avatarEnabled: (() => {
+                    if (typeof window !== 'undefined') {
+                        const saved = localStorage.getItem('avatarEnabled');
+                        if (saved === 'true') return true;
+                        if (saved === 'false') return false;
+                    }
+                    return false;
+                })(),
+                avatarAudioOffsetMs: (() => {
+                    if (typeof window !== 'undefined') {
+                        const saved = localStorage.getItem('avatarAudioOffsetMs');
+                        if (saved) {
+                            const parsed = parseFloat(saved);
+                            if (!isNaN(parsed) && parsed >= 0 && parsed <= 2000) return parsed;
+                        }
+                    }
+                    return 150;
                 })(),
                 // STT provider: 'browser' (Web Speech API), 'server' (OpenAI-compat), 'wasm' (local Whisper)
                 sttProvider: (() => {
@@ -2214,6 +2256,38 @@ export const useConfigStore = create<ConfigStore>()(
                     set({ openaiCompatibleTtsModel: model });
                     if (typeof window !== 'undefined') {
                         localStorage.setItem('openaiCompatibleTtsModel', model);
+                    }
+                },
+
+                setAvatarServerUrl: (url: string) => {
+                    set({ avatarServerUrl: url });
+                    if (typeof window !== 'undefined') {
+                        localStorage.setItem('avatarServerUrl', url);
+                    }
+                },
+
+                setAvatarImageDataUrl: (dataUrl: string) => {
+                    set({ avatarImageDataUrl: dataUrl });
+                    if (typeof window !== 'undefined') {
+                        try {
+                            localStorage.setItem('avatarImageDataUrl', dataUrl);
+                        } catch {
+                            // Data URLs can exceed the localStorage quota; the avatar panel keeps an in-memory copy.
+                        }
+                    }
+                },
+
+                setAvatarEnabled: (enabled: boolean) => {
+                    set({ avatarEnabled: enabled });
+                    if (typeof window !== 'undefined') {
+                        localStorage.setItem('avatarEnabled', enabled ? 'true' : 'false');
+                    }
+                },
+
+                setAvatarAudioOffsetMs: (ms: number) => {
+                    set({ avatarAudioOffsetMs: ms });
+                    if (typeof window !== 'undefined') {
+                        localStorage.setItem('avatarAudioOffsetMs', String(ms));
                     }
                 },
 
