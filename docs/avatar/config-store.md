@@ -52,8 +52,26 @@ setAvatarServerUrl: (url) => {
 
 `avatarImageDataUrl` can be a very large string (a high-res JPEG at
 base64 can be 2–5 MB). `localStorage` is usually capped at 5–10 MB per
-origin. The setter wraps `setItem` in try/catch so a quota overflow
-does not crash the app:
+origin and OpenChamber's `useConfigStore` is shared with many other
+keys, so a large portrait can blow the budget and break unrelated
+settings.
+
+Two defenses work together:
+
+**1. Client-side size guard** in `AvatarPanel.tsx` — files larger than
+`PORTRAIT_MAX_BYTES` (512 KB, ~2–4× a typical 256×256 JPEG) are rejected
+before any `FileReader` work runs:
+
+```ts
+if (file.size > PORTRAIT_MAX_BYTES) {
+  toast.error(t('chat.avatar.toast.portraitTooLarge', {
+    maxKb: Math.round(PORTRAIT_MAX_BYTES / 1024),
+  }));
+  return;
+}
+```
+
+**2. Rollback on quota overflow** in the setter (`useConfigStore.ts`):
 
 ```ts
 setAvatarImageDataUrl: (dataUrl) => {
@@ -62,15 +80,29 @@ setAvatarImageDataUrl: (dataUrl) => {
     try {
       localStorage.setItem('avatarImageDataUrl', dataUrl);
     } catch {
-      // Data URLs can exceed the localStorage quota; keep in-memory copy.
+      // Quota exceeded or storage unavailable. Roll back the in-memory copy
+      // so the store and persistent storage stay in sync.
+      set({ avatarImageDataUrl: '' });
     }
   }
 },
 ```
 
-When the quota is exceeded the store retains the data URL in memory
-(so the avatar panel still has it for the `image` field in the WebSocket
-init frame) but it is not persisted across page reloads.
+When the quota is exceeded the setter clears the in-memory copy and
+returns the store to its prior state. `AvatarPanel` then surfaces a
+`chat.avatar.toast.portraitQuotaExceeded` toast so the user understands
+why their portrait is gone.
+
+This is intentionally stricter than the original "keep in memory even
+if persistence fails" behavior: a partially-persisted state (in-memory
+≠ localStorage) was confusing during refresh — the user would see their
+portrait working, then lose it on a reload with no explanation.
+
+Note that the avatar fields are **not** in the `persist()` partializer
+(`useConfigStore.ts:2609-2630`), so zustand's `persist` middleware does
+not re-serialize the data URL on every state change. Persistence is
+fully delegated to the manual `localStorage` calls above — which is the
+established pattern for all voice fields in this store.
 
 ## Subscribers
 

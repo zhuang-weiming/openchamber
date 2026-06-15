@@ -22,8 +22,16 @@ import { useEffect, useRef, useState } from 'react';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Icon } from '@/components/icon/Icon';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
+import { toast } from '@/components/ui';
 import { getAvatarAudioBridge } from '@/lib/voice/avatarAudioBridge';
+import { useI18n } from '@/lib/i18n';
 import type { IconName } from '@/components/icon/icons';
+
+const PORTRAIT_MAX_BYTES = 512 * 1024;
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed' | 'disabled';
 
@@ -37,6 +45,7 @@ interface AvatarPanelProps {
 }
 
 export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Element | null {
+  const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
   const avatarServerUrl = useConfigStore((state) => state.avatarServerUrl);
   const avatarImageDataUrl = useConfigStore((state) => state.avatarImageDataUrl);
@@ -53,15 +62,10 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [serverUrlDraft, setServerUrlDraft] = useState(avatarServerUrl);
-  const [offsetDraft, setOffsetDraft] = useState(String(avatarAudioOffsetMs));
 
   useEffect(() => {
     setServerUrlDraft(avatarServerUrl);
   }, [avatarServerUrl]);
-
-  useEffect(() => {
-    setOffsetDraft(String(avatarAudioOffsetMs));
-  }, [avatarAudioOffsetMs]);
 
   // Drive the audio bridge from store state. The bridge itself is a
   // singleton: we just open/close it as configuration changes.
@@ -119,30 +123,42 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0];
+    event.target.value = '';
     if (!file) return;
+    if (file.size > PORTRAIT_MAX_BYTES) {
+      toast.error(t('chat.avatar.toast.portraitTooLarge', {
+        maxKb: Math.round(PORTRAIT_MAX_BYTES / 1024),
+      }));
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
-        setAvatarImageDataUrl(reader.result);
+        const accepted = setAvatarImageDataUrlWithQuotaGuard(reader.result, () => {
+          toast.error(t('chat.avatar.toast.portraitQuotaExceeded'));
+        });
+        if (!accepted) {
+          toast.error(t('chat.avatar.toast.portraitQuotaExceeded'));
+        }
       }
     };
     reader.readAsDataURL(file);
   };
 
-  const handleSaveSettings = (): void => {
+  const handleApply = (): void => {
     setAvatarServerUrl(serverUrlDraft.trim());
-    const parsed = Number(offsetDraft);
-    if (!Number.isNaN(parsed)) {
-      setAvatarAudioOffsetMs(Math.max(0, Math.min(2000, parsed)));
-    }
+  };
+
+  const handleOffsetChange = (next: number): void => {
+    setAvatarAudioOffsetMs(Math.max(0, Math.min(2000, next)));
   };
 
   const stateLabel: Record<ConnectionState, string> = {
-    idle: 'Idle',
-    connecting: 'Connecting…',
-    connected: 'Live',
-    failed: 'Failed',
-    disabled: 'Not configured',
+    idle: t('chat.avatar.status.idle'),
+    connecting: t('chat.avatar.status.connecting'),
+    connected: t('chat.avatar.status.live'),
+    failed: t('chat.avatar.status.failed'),
+    disabled: t('chat.avatar.status.notConfigured'),
   };
 
   const stateColor: Record<ConnectionState, string> = {
@@ -175,16 +191,17 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Icon name="user" className="h-4 w-4" />
-          <span className="font-medium">Digital Human</span>
+          <span className="font-medium">{t('chat.avatar.title')}</span>
         </div>
         <label className="flex cursor-pointer items-center gap-1.5">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={avatarEnabled}
-            onChange={(e) => setAvatarEnabled(e.target.checked)}
-            className="h-3.5 w-3.5 cursor-pointer"
+            onChange={setAvatarEnabled}
+            ariaLabel={t('chat.avatar.enableLabel')}
           />
-          <span className="typography-micro text-[var(--surface-muted-foreground)]">Enable</span>
+          <span className="typography-micro text-[var(--surface-muted-foreground)]">
+            {t('chat.avatar.enableLabel')}
+          </span>
         </label>
       </div>
 
@@ -208,7 +225,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
             style={{ color: currentTheme.colors.surface.mutedForeground }}
           >
             <Icon name="user" className="h-6 w-6" />
-            <span className="typography-meta">Avatar disabled</span>
+            <span className="typography-meta">{t('chat.avatar.disabledPlaceholder')}</span>
           </div>
         )}
         {avatarEnabled && !avatarImageDataUrl && (
@@ -217,7 +234,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
             style={{ color: currentTheme.colors.surface.mutedForeground }}
           >
             <Icon name="file-image" className="h-6 w-6" />
-            <span className="typography-meta">Upload a portrait below</span>
+            <span className="typography-meta">{t('chat.avatar.uploadPrompt')}</span>
           </div>
         )}
         {connectionState === 'failed' && avatarEnabled && (
@@ -226,7 +243,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
             style={{ color: currentTheme.colors.status.error }}
           >
             <Icon name="error-warning" className="h-6 w-6" />
-            <span className="typography-meta">{errorMessage ?? 'Connection failed'}</span>
+            <span className="typography-meta">{errorMessage ?? t('chat.avatar.connectionFailed')}</span>
           </div>
         )}
       </div>
@@ -240,24 +257,20 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
 
       <div className="flex flex-col gap-1.5">
         <label className="typography-micro text-[var(--surface-muted-foreground)]">
-          LiveTalking server URL
+          {t('chat.avatar.serverUrlLabel')}
         </label>
-        <input
+        <Input
           type="text"
           value={serverUrlDraft}
           onChange={(e) => setServerUrlDraft(e.target.value)}
-          placeholder="http://localhost:8765"
-          className="w-full rounded border bg-transparent px-2 py-1 typography-meta"
-          style={{
-            borderColor: currentTheme.colors.interactive.border,
-            color: currentTheme.colors.surface.foreground,
-          }}
+          placeholder={t('chat.avatar.serverUrlPlaceholder')}
+          className="typography-meta"
         />
       </div>
 
       <div className="flex flex-col gap-1.5">
         <label className="typography-micro text-[var(--surface-muted-foreground)]">
-          Portrait (image)
+          {t('chat.avatar.portraitLabel')}
         </label>
         <input
           type="file"
@@ -266,48 +279,42 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
           className="typography-micro"
         />
         {avatarImageDataUrl && (
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => setAvatarImageDataUrl('')}
-            className="self-start typography-micro hover:underline"
-            style={{ color: currentTheme.colors.status.error }}
+            className="self-start"
+            style={{ color: 'var(--status-error)' }}
           >
-            Remove portrait
-          </button>
+            {t('chat.avatar.removePortrait')}
+          </Button>
         )}
       </div>
 
       <div className="flex flex-col gap-1.5">
         <label className="typography-micro text-[var(--surface-muted-foreground)]">
-          Audio offset (ms) — sync delay to match avatar processing
+          {t('chat.avatar.audioOffsetLabel')}
         </label>
-        <input
-          type="number"
+        <NumberInput
+          value={avatarAudioOffsetMs}
+          onValueChange={handleOffsetChange}
           min={0}
           max={2000}
           step={10}
-          value={offsetDraft}
-          onChange={(e) => setOffsetDraft(e.target.value)}
-          className="w-full rounded border bg-transparent px-2 py-1 typography-meta"
-          style={{
-            borderColor: currentTheme.colors.interactive.border,
-            color: currentTheme.colors.surface.foreground,
-          }}
+          fallbackValue={150}
+          className="typography-meta"
         />
       </div>
 
-      <button
+      <Button
         type="button"
-        onClick={handleSaveSettings}
-        className="rounded border px-3 py-1.5 typography-ui-label hover:bg-[var(--interactive-hover)]"
-        style={{
-          borderColor: currentTheme.colors.interactive.border,
-          backgroundColor: currentTheme.colors.interactive.selection,
-          color: currentTheme.colors.interactive.selectionForeground,
-        }}
+        variant="default"
+        size="sm"
+        onClick={handleApply}
       >
-        Apply
-      </button>
+        {t('chat.avatar.apply')}
+      </Button>
     </div>
   );
 
@@ -369,4 +376,20 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
 function buildOfferUrl(serverUrl: string): string {
   const trimmed = serverUrl.replace(/\/+$/, '');
   return `${trimmed}/offer`;
+}
+
+function setAvatarImageDataUrlWithQuotaGuard(
+  dataUrl: string,
+  onQuotaExceeded: () => void,
+): boolean {
+  const before = useConfigStore.getState().avatarImageDataUrl;
+  useConfigStore.getState().setAvatarImageDataUrl(dataUrl);
+  const after = useConfigStore.getState().avatarImageDataUrl;
+  if (after !== dataUrl) {
+    if (before !== after) {
+      onQuotaExceeded();
+    }
+    return false;
+  }
+  return true;
 }

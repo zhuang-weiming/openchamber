@@ -49,9 +49,10 @@ working end-to-end.
 | File | Change |
 |---|---|
 | `packages/ui/src/lib/voice/avatarAudioBridge.ts` | **NEW** — WebSocket PCM uplink (resample, mono mix, Int16 LE) |
-| `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx` | **NEW** — WebRTC peer + floating settings panel |
+| `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx` | **NEW** — WebRTC peer + floating settings panel (uses shared `Input` / `NumberInput` / `Checkbox` / `Button`) |
 | `packages/ui/src/hooks/useServerTTS.ts` | MODIFIED — tee the decoded `AudioBuffer` to the bridge; honor `avatarAudioOffsetMs` on `start(when)` |
-| `packages/ui/src/stores/useConfigStore.ts` | MODIFIED — four new persisted avatar fields |
+| `packages/ui/src/stores/useConfigStore.ts` | MODIFIED — four new persisted avatar fields + quota-rollback safety on the portrait setter |
+| `packages/ui/src/lib/i18n/messages/*.ts` | MODIFIED — added `chat.avatar.*` keys in 9 locales |
 | `packages/ui/src/components/chat/ChatContainer.tsx` | MODIFIED — mount `AvatarPanel` top-right when enabled and configured |
 
 The server (`packages/web/server/lib/tts/`) is **not modified** — both `/api/tts/speak`
@@ -68,3 +69,30 @@ bridge sees the same `AudioBuffer` the speaker would have played.
 - The current implementation mirrors the **full decoded AudioBuffer** per
   message. Streaming partial buffers as they arrive is a follow-up (see
   `audio-bridge.md` → "Future work").
+
+## Conventions followed
+
+To stay mergeable into upstream, this feature follows the project's
+non-negotiable conventions:
+
+- **Theme tokens only** — every color references `currentTheme.colors.*`
+  or theme CSS variables (`--surface-*`, `--interactive-*`, `--status-*`).
+  No hardcoded hex or Tailwind color utilities.
+- **Shared UI primitives** — `Button`, `Checkbox`, `Input`, `NumberInput`
+  come from `packages/ui/src/components/ui/`. No raw `<button>` or
+  `<input type="checkbox">`.
+- **Icon sprite** — every icon goes through the shared `<Icon>`
+  component; never `@remixicon/react`.
+- **i18n** — every user-visible string lives in
+  `packages/ui/src/lib/i18n/messages/*.ts`. The `chat.avatar.*` namespace
+  is added in all 9 supported locales.
+- **Toasts** — user-visible feedback (size limit, quota exceeded) goes
+  through the `toast` wrapper from `@/components/ui`, not `sonner` directly.
+- **Persistence** — voice fields use the manual `localStorage` pattern
+  established by the rest of `useConfigStore`. They are deliberately
+  **not** in the `persist()` partializer so zustand does not re-serialize
+  the (potentially large) image data URL on every keystroke.
+- **Failure isolation** — the bridge never throws on the audio path;
+  portrait failures roll the store back and surface a toast; WebRTC
+  failures render inline in the panel. The chat surface is never
+  affected.

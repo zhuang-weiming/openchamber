@@ -25,7 +25,6 @@
 const TARGET_SAMPLE_RATE = 16000;
 const BITS_PER_SAMPLE = 16;
 const CHANNELS = 1;
-const RESAMPLE_BUFFER_POOL_LIMIT = 8;
 
 export interface AvatarAudioBridgeConfig {
   /**
@@ -118,7 +117,7 @@ function float32ToInt16LE(samples: Float32Array): ArrayBuffer {
 function mixToMono(buffer: AudioBuffer): Float32Array {
   const { numberOfChannels, length } = buffer;
   if (numberOfChannels === 1) {
-    return buffer.getChannelData(0).slice();
+    return buffer.getChannelData(0);
   }
   const output = new Float32Array(length);
   for (let channel = 0; channel < numberOfChannels; channel += 1) {
@@ -143,8 +142,6 @@ class AvatarAudioBridgeImpl {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private closedByUser = false;
-  private resampleBufferPool: Float32Array[] = [];
-  private framesSent = 0;
 
   subscribe(listener: StateListener): () => void {
     this.listeners.add(listener);
@@ -212,13 +209,10 @@ class AvatarAudioBridgeImpl {
     const resampled = sourceRate === TARGET_SAMPLE_RATE
       ? mono
       : resampleLinear(mono, sourceRate, TARGET_SAMPLE_RATE);
-    this.returnToPool(mono);
     const payload = float32ToInt16LE(resampled);
-    this.returnToPool(resampled);
     try {
       this.socket.send(payload);
-      this.framesSent += 1;
-      this.setState({ framesSent: this.framesSent, lastError: null });
+      this.setState({ framesSent: this.state.framesSent + 1, lastError: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setState({ lastError: `send failed: ${message}` });
@@ -237,8 +231,7 @@ class AvatarAudioBridgeImpl {
     const payload = frame instanceof ArrayBuffer ? frame : frame.buffer;
     try {
       this.socket.send(payload);
-      this.framesSent += 1;
-      this.setState({ framesSent: this.framesSent, lastError: null });
+      this.setState({ framesSent: this.state.framesSent + 1, lastError: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setState({ lastError: `send failed: ${message}` });
@@ -277,7 +270,7 @@ class AvatarAudioBridgeImpl {
 
     socket.onopen = () => {
       this.reconnectAttempts = 0;
-      this.setState({ connected: true, connecting: false, lastError: null });
+      this.setState({ connected: true, connecting: false, lastError: null, framesSent: 0 });
       if (imageDataUrl) {
         try {
           socket.send(JSON.stringify({ type: 'init', image: imageDataUrl, sampleRate: TARGET_SAMPLE_RATE, channels: CHANNELS, bitsPerSample: BITS_PER_SAMPLE }));
@@ -346,11 +339,6 @@ class AvatarAudioBridgeImpl {
     }
     const replaced = baseHttpUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
     return `${replaced.replace(/\/+$/, '')}${path}`;
-  }
-
-  private returnToPool(buffer: Float32Array): void {
-    if (this.resampleBufferPool.length >= RESAMPLE_BUFFER_POOL_LIMIT) return;
-    this.resampleBufferPool.push(buffer);
   }
 }
 

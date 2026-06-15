@@ -24,8 +24,13 @@ few seconds.
 git clone https://github.com/remsky/Kokoro-FastAPI.git
 cd Kokoro-FastAPI
 pip install -r requirements.txt
-python -m api.src.main
-# or: uvicorn api.src.main:app --host 0.0.0.0 --port 8880
+# Entry point varies across versions; consult the repo's README for the
+# current command. Common forms include:
+python main.py
+# or
+python api/src/main.py
+# or
+uvicorn api.src.main:app --host 0.0.0.0 --port 8880
 ```
 
 ### Verify

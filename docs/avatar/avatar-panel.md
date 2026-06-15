@@ -112,14 +112,66 @@ the app's existing autoplay / focus behavior on iOS and Electron.
 
 ## User controls
 
-| Control | Store binding | Notes |
-|---|---|---|
-| Enable checkbox | `avatarEnabled` / `setAvatarEnabled` | Persisted to localStorage |
-| Server URL input | `avatarServerUrl` / local draft state | Draft only; saved on Apply |
-| Portrait file picker | `avatarImageDataUrl` / `setAvatarImageDataUrl` | Base64 data URL; may exceed localStorage quota |
-| Remove portrait | `setAvatarImageDataUrl('')` | Clears image; bridge reconnects without init frame |
-| Audio offset | `avatarAudioOffsetMs` / local draft state | Min 0, max 2000, step 10 |
-| Apply button | Calls all setters | Must be clicked after URL or offset change |
+| Control | Component | Store binding | Notes |
+|---|---|---|---|
+| Enable checkbox | shared `<Checkbox>` | `avatarEnabled` / `setAvatarEnabled` | Persisted to localStorage |
+| Server URL input | shared `<Input>` | `avatarServerUrl` / local draft state | Draft only; saved on Apply |
+| Portrait file picker | raw `<input type="file">` | `avatarImageDataUrl` / `setAvatarImageDataUrl` | Rejected if `> PORTRAIT_MAX_BYTES` (512 KB) |
+| Remove portrait | shared `<Button variant="ghost" size="xs">` | `setAvatarImageDataUrl('')` | Clears image; bridge reconnects without init frame |
+| Audio offset | shared `<NumberInput>` | `avatarAudioOffsetMs` | Min 0, max 2000, step 10; commits on change |
+| Apply button | shared `<Button variant="default" size="sm">` | `setAvatarServerUrl` | Saves server URL draft |
+
+The Audio offset commits directly to the store on every change (no
+Apply needed) — the value is read on the next `speak()` call, and
+applying it mid-utterance would cause a one-off glitch that is worse
+than a slightly stale value.
+
+Server URL still uses a draft + Apply pattern because the URL change
+also triggers a `bridge.connect()` round-trip and a WebRTC peer
+renegotiation; we don't want to fire those on every keystroke.
+
+### Shared UI primitives
+
+This component is one of the first in the codebase to use **all four**
+of the shared form primitives (`Input`, `NumberInput`, `Checkbox`,
+`Button`) in a single panel. Where the previous version used raw HTML
+elements with hand-rolled Tailwind classes, the current version defers to
+`packages/ui/src/components/ui/*` so:
+
+- `Input` provides focus rings, hover transitions, and error states for
+  free.
+- `NumberInput` provides mobile +/- buttons and step normalization.
+- `Checkbox` provides `ariaLabel`, indeterminate state, and Base UI's
+  built-in keyboard handling.
+- `Button` provides the theme-aligned `variant="default"` (primary tint)
+  for the CTA, `variant="ghost"` for the inline destructive action, and
+  the squircle/rounded-[10px] shape language used everywhere else.
+
+## Internationalization
+
+Every user-facing string is routed through `useI18n()` with keys in the
+`chat.avatar.*` namespace. Keys live in `packages/ui/src/lib/i18n/messages/*.ts`
+across all 9 supported locales (en, zh-CN, zh-TW, es, fr, ko, pl, pt-BR, uk).
+
+| Key | Purpose |
+|---|---|
+| `chat.avatar.title` | Panel header |
+| `chat.avatar.enableLabel` | Checkbox label and aria-label |
+| `chat.avatar.disabledPlaceholder` | Empty-state hint when toggled off |
+| `chat.avatar.uploadPrompt` | Empty-state hint when no portrait |
+| `chat.avatar.connectionFailed` | Fallback message when WebRTC fails |
+| `chat.avatar.serverUrlLabel` / `.serverUrlPlaceholder` | URL field |
+| `chat.avatar.portraitLabel` | Portrait file picker label |
+| `chat.avatar.removePortrait` | Inline destructive action |
+| `chat.avatar.audioOffsetLabel` | Sync offset field |
+| `chat.avatar.apply` | Apply CTA |
+| `chat.avatar.status.{idle,connecting,live,failed,notConfigured}` | Connection state labels |
+| `chat.avatar.toast.portraitTooLarge` | Size-limit error |
+| `chat.avatar.toast.portraitQuotaExceeded` | localStorage overflow error |
+
+Connection state values that depend on `connectionState` are resolved
+inside the component on every render so locale changes propagate without
+remount.
 
 ## Theme integration
 

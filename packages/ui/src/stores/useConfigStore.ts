@@ -2272,7 +2272,10 @@ export const useConfigStore = create<ConfigStore>()(
                         try {
                             localStorage.setItem('avatarImageDataUrl', dataUrl);
                         } catch {
-                            // Data URLs can exceed the localStorage quota; the avatar panel keeps an in-memory copy.
+                            // Quota exceeded or storage unavailable. Roll back the in-memory copy so
+                            // the store and persistent storage stay in sync; the user will need to
+                            // upload a smaller portrait.
+                            set({ avatarImageDataUrl: '' });
                         }
                     }
                 },

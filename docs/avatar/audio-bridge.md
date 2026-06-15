@@ -96,8 +96,10 @@ write little-endian.
 
 ### `mixToMono(buffer)` (line 118)
 
-For a mono buffer, returns a copy of channel 0. For multi-channel
-(stereo) buffers, averages all channels into a single `Float32Array`.
+For a mono buffer, returns the underlying channel 0 view directly (no
+copy — downstream `resampleLinear` and `float32ToInt16LE` do not mutate
+the input). For multi-channel (stereo) buffers, averages all channels
+into a single `Float32Array`.
 
 ## WebSocket protocol
 
@@ -138,6 +140,10 @@ The server may close the socket at any time. The bridge schedules a
 reconnect with exponential backoff (capped at 30 s) unless `disconnect()`
 was called explicitly by user code.
 
+`framesSent` is reset to `0` on every successful `socket.onopen`. The
+counter therefore reflects activity for the current connection only and
+is not cumulative across reconnects.
+
 ## Reconnect logic
 
 `scheduleReconnect()` (line 311):
@@ -161,12 +167,24 @@ Reconnect is suppressed while the user has explicitly called
 `packages/ui/src/sync/event-pipeline.ts` (long backoff cap, no aggressive
 retry on user-toggled-off state).
 
-## Buffer pool
+## Allocation policy
 
-`resampleBufferPool` keeps up to 8 recently-used `Float32Array`s around
-so consecutive TTS messages of similar size can reuse memory. This is
-deliberately bounded — running TTS in a chat session does not produce
-enough frames for the pool to grow without bound.
+Per-message buffers (`mixToMono`, `resampleLinear`, `float32ToInt16LE`)
+allocate fresh on each call and are immediately eligible for GC after
+`socket.send(payload)` returns. This is acceptable for the
+speech-rate, short-buffer use case here: typical TTS frames are 1–5 s at
+16 kHz mono (~32–160 KB Int16) and the browser's young-generation GC
+reclaims them cheaply.
+
+A buffer pool was considered and explicitly removed (commit history
+contains an earlier draft of `returnToPool`). The complexity was not
+worth it: pool draining had to be paired with allocation-side changes
+that obscured the per-call shape, and chat-session TTS workloads do not
+produce enough frames per minute to benefit from retention.
+
+If allocation pressure becomes a real issue, the right fix is to move
+the conversion into an `AudioWorklet` and reuse a small ring buffer of
+`SharedArrayBuffer` chunks. See `Future work` below.
 
 ## Failure modes
 

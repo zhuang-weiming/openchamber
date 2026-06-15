@@ -33,7 +33,7 @@ AudioBuffer
 | `source.start()` after | Too late — the AudioContext would already have queued the buffer for playback and we'd have already lost the sync reference |
 | Inside `onended` | Does not help — the audio is over |
 
-## Audio offset for lipsync (lines 340–352)
+## Audio offset for lipsync (lines 348–355)
 
 ```ts
 const offsetSeconds = avatarEnabled && avatarServerUrl
@@ -45,6 +45,10 @@ if (offsetSeconds > 0) {
   source.start(0);
 }
 ```
+
+`AvatarPanel.handleOffsetChange` clamps the value to `[0, 2000]` before
+storing, so the `Math.max(0, …)` here is defense-in-depth — by the time
+`avatarAudioOffsetMs` reaches this hook it is always non-negative.
 
 ### Why a delay is needed
 
@@ -99,7 +103,7 @@ contract.
 ## Hook dependency
 
 The `useCallback` dependency list on `speak` adds three new selectors
-(line 366):
+(line 369):
 
 ```ts
 avatarEnabled,
