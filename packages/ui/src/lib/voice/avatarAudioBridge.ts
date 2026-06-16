@@ -16,7 +16,7 @@
  *   container header — bare Int16 LE PCM is rejected.
  *
  *   This module:
- *     1. Holds the configured server URL + cached imageDataUrl as state
+  *     1. Holds the configured server URL as state
  *     2. Resamples AudioBuffer -> 16 kHz mono on demand
  *     3. Packs float32 [-1, 1] samples into Int16 little-endian
  *     4. Prepends a 44-byte RIFF/WAVE header so soundfile can decode
@@ -41,13 +41,6 @@ export interface AvatarAudioBridgeConfig {
    * `AvatarPanel` uses `${baseUrl}/offer` for the WebRTC offer separately.
    */
   serverUrl: string;
-  /**
-   * Optional reference image data URL. Sent with the WebRTC offer body
-   * in `AvatarPanel.openPeer()`. The bridge does not transmit it itself
-   * — it is cached here so a follow-up `connect()` call carries the same
-   * identity.
-   */
-  imageDataUrl?: string;
   /**
    * When true, the bridge will not log per-frame activity. Defaults to false
    * for the first version to help bring-up.
@@ -268,7 +261,6 @@ class AvatarAudioBridgeImpl {
     const serverUrl = input.serverUrl.replace(/\/+$/, '');
     return {
       serverUrl,
-      imageDataUrl: input.imageDataUrl,
       silent: input.silent ?? false,
       audioPath: input.audioPath ?? '/humanaudio',
     };

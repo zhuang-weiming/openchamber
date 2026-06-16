@@ -14,7 +14,7 @@
      │                                             │
      │  audio/mpeg (MP3 stream)                    │
      ▼                                             │
- useServerTTS (packages/ui/src/hooks/useServerTTS.ts:297-304)
+ useServerTTS (packages/ui/src/hooks/useServerTTS.ts:297-315)
      │                                             │
      │  fetch → blob → arrayBuffer → decodeAudioData
      ▼                                             │

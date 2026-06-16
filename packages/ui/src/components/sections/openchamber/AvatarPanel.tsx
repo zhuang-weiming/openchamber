@@ -12,6 +12,9 @@
  * already depends on). Lip-sync is implicit because both consumers
  * receive the same AudioBuffer at the same time.
  *
+ * The avatar identity is determined by LiveTalking's `--avatar_id` startup
+ * parameter, not by a portrait uploaded in this panel.
+ *
  * The component is designed to fail soft: if the avatar backend is
  * offline, the WebRTC offer fails, or the user has not configured a
  * server URL, the panel renders an empty placeholder rather than
@@ -26,12 +29,9 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
-import { toast } from '@/components/ui';
 import { getAvatarAudioBridge } from '@/lib/voice/avatarAudioBridge';
 import { useI18n } from '@/lib/i18n';
 import type { IconName } from '@/components/icon/icons';
-
-const PORTRAIT_MAX_BYTES = 512 * 1024;
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed' | 'disabled';
 
@@ -48,11 +48,9 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
   const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
   const avatarServerUrl = useConfigStore((state) => state.avatarServerUrl);
-  const avatarImageDataUrl = useConfigStore((state) => state.avatarImageDataUrl);
   const avatarEnabled = useConfigStore((state) => state.avatarEnabled);
   const avatarAudioOffsetMs = useConfigStore((state) => state.avatarAudioOffsetMs);
   const setAvatarServerUrl = useConfigStore((state) => state.setAvatarServerUrl);
-  const setAvatarImageDataUrl = useConfigStore((state) => state.setAvatarImageDataUrl);
   const setAvatarEnabled = useConfigStore((state) => state.setAvatarEnabled);
   const setAvatarAudioOffsetMs = useConfigStore((state) => state.setAvatarAudioOffsetMs);
   const setCurrentAvatarSessionId = useConfigStore((state) => state.setCurrentAvatarSessionId);
@@ -76,14 +74,11 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
       bridge.disconnect();
       return;
     }
-    bridge.connect({
-      serverUrl: avatarServerUrl,
-      imageDataUrl: avatarImageDataUrl || undefined,
-    });
+    bridge.connect({ serverUrl: avatarServerUrl });
     return () => {
       bridge.disconnect();
     };
-  }, [avatarEnabled, avatarServerUrl, avatarImageDataUrl]);
+  }, [avatarEnabled, avatarServerUrl]);
 
   // Open / close the WebRTC peer whenever the avatar server config flips.
   useEffect(() => {
@@ -99,9 +94,8 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
 
     const teardown = teardownPeer;
     const serverUrl = avatarServerUrl;
-    const image = avatarImageDataUrl;
 
-    openPeer(serverUrl, image)
+    openPeer(serverUrl)
       .then(() => {
         if (cancelled) return;
         setConnectionState('connected');
@@ -120,31 +114,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
     // captured via local references above to keep the effect dependency
     // list narrow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [avatarEnabled, avatarServerUrl, avatarImageDataUrl]);
-
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>): void => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    if (file.size > PORTRAIT_MAX_BYTES) {
-      toast.error(t('chat.avatar.toast.portraitTooLarge', {
-        maxKb: Math.round(PORTRAIT_MAX_BYTES / 1024),
-      }));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        const accepted = setAvatarImageDataUrlWithQuotaGuard(reader.result, () => {
-          toast.error(t('chat.avatar.toast.portraitQuotaExceeded'));
-        });
-        if (!accepted) {
-          toast.error(t('chat.avatar.toast.portraitQuotaExceeded'));
-        }
-      }
-    };
-    reader.readAsDataURL(file);
-  };
+  }, [avatarEnabled, avatarServerUrl]);
 
   const handleApply = (): void => {
     setAvatarServerUrl(serverUrlDraft.trim());
@@ -229,15 +199,6 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
             <span className="typography-meta">{t('chat.avatar.disabledPlaceholder')}</span>
           </div>
         )}
-        {avatarEnabled && !avatarImageDataUrl && (
-          <div
-            className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center"
-            style={{ color: currentTheme.colors.surface.mutedForeground }}
-          >
-            <Icon name="file-image" className="h-6 w-6" />
-            <span className="typography-meta">{t('chat.avatar.uploadPrompt')}</span>
-          </div>
-        )}
         {connectionState === 'failed' && avatarEnabled && (
           <div
             className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center"
@@ -267,30 +228,6 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
           placeholder={t('chat.avatar.serverUrlPlaceholder')}
           className="typography-meta"
         />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label className="typography-micro text-[var(--surface-muted-foreground)]">
-          {t('chat.avatar.portraitLabel')}
-        </label>
-        <input
-          type="file"
-          accept="image/*"
-          onChange={handleImageUpload}
-          className="typography-micro"
-        />
-        {avatarImageDataUrl && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={() => setAvatarImageDataUrl('')}
-            className="self-start"
-            style={{ color: 'var(--status-error)' }}
-          >
-            {t('chat.avatar.removePortrait')}
-          </Button>
-        )}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -335,7 +272,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
     setCurrentAvatarSessionId('');
   }
 
-  async function openPeer(serverUrl: string, imageDataUrl: string): Promise<void> {
+  async function openPeer(serverUrl: string): Promise<void> {
     teardownPeer();
     const peer = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -361,7 +298,6 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
       body: JSON.stringify({
         sdp: offer.sdp,
         type: offer.type,
-        ...(imageDataUrl ? { image: imageDataUrl } : {}),
       }),
     });
     if (!response.ok) {
@@ -381,20 +317,4 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
 function buildOfferUrl(serverUrl: string): string {
   const trimmed = serverUrl.replace(/\/+$/, '');
   return `${trimmed}/offer`;
-}
-
-function setAvatarImageDataUrlWithQuotaGuard(
-  dataUrl: string,
-  onQuotaExceeded: () => void,
-): boolean {
-  const before = useConfigStore.getState().avatarImageDataUrl;
-  useConfigStore.getState().setAvatarImageDataUrl(dataUrl);
-  const after = useConfigStore.getState().avatarImageDataUrl;
-  if (after !== dataUrl) {
-    if (before !== after) {
-      onQuotaExceeded();
-    }
-    return false;
-  }
-  return true;
 }
