@@ -1,8 +1,10 @@
 # Audio Bridge
 
-The audio bridge is a singleton WebSocket client that forwards TTS audio
-from the browser to a LiveTalking / MuseTalk backend as 16 kHz mono
-16-bit PCM.
+The audio bridge is a singleton HTTP client that forwards TTS audio
+from the browser to a LiveTalking / MuseTalk backend as a
+`multipart/form-data` upload to `POST /humanaudio`. The upload body is
+a 16 kHz mono 16-bit PCM WAV blob (44-byte RIFF header + Int16 LE
+samples).
 
 **File**: `packages/ui/src/lib/voice/avatarAudioBridge.ts`
 
@@ -14,70 +16,78 @@ import { getAvatarAudioBridge } from '@/lib/voice/avatarAudioBridge';
 const bridge = getAvatarAudioBridge();
 
 bridge.connect({ serverUrl: 'http://localhost:8765', imageDataUrl? });
-bridge.feedAudioBuffer(audioBuffer);
+bridge.feedAudioChunk(audioBuffer, sessionId);
 bridge.disconnect();
 ```
 
 ### `getAvatarAudioBridge()`
 
 Returns the process-wide singleton. Creating the class directly is
-discouraged; everything is wired through the singleton so there is exactly
-one WebSocket per browser tab.
+discouraged; everything is wired through the singleton so there is
+exactly one logical uplink per browser tab.
 
 ### `AvatarAudioBridgeConfig`
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `serverUrl` | `string` | required | Base HTTP URL, e.g. `http://localhost:8765` |
-| `imageDataUrl` | `string?` | `undefined` | Sent once on connect as part of the `init` frame |
+| `imageDataUrl` | `string?` | `undefined` | Sent once as part of `POST /offer` body (handled by `AvatarPanel`, not the bridge) |
 | `silent` | `boolean` | `false` | Suppress console logging |
-| `audioPath` | `string` | `/ws/audio` | Override the WebSocket path |
-| `binaryType` | `BinaryType` | `arraybuffer` | WebSocket binary type |
+| `audioPath` | `string` | `/humanaudio` | Override the upload path |
 
 ### `AvatarAudioBridgeState`
 
 | Field | Meaning |
 |---|---|
-| `connected` | WebSocket is `OPEN` and frames are flowing |
-| `connecting` | A connect attempt is in flight |
-| `framesSent` | Counter of successfully sent frames since last connect |
+| `connected` | Last `connect()` succeeded and at least one upload is configured |
+| `connecting` | A `connect()` call is in flight |
+| `framesSent` | Counter of successfully sent frames since the last `connect()` |
 | `lastError` | Last error message (or `null`) |
 
 Subscribers are notified on every state change via `subscribe(listener)`.
 
 ### `connect(config)`
 
-Open (or re-open) a WebSocket to the configured avatar backend. Safe to
-call multiple times — the most recent config wins and a same-config call
-on an open/connecting socket is a no-op.
+Cache the server URL and (optionally) image data URL. Safe to call
+multiple times — the most recent config wins and a same-config call is
+a no-op. The bridge does **not** open a long-lived connection; each
+`feedAudioChunk` is an independent HTTP POST.
 
 ### `disconnect()`
 
-Close the WebSocket, cancel any scheduled reconnect, mark state `closed`.
-The caller is responsible for `connect()` again to resume.
+Clear the cached config and reset state. Subsequent `feedAudioChunk`
+calls are no-ops until the next `connect()`.
 
-### `feedAudioBuffer(buffer: AudioBuffer)`
+### `feedAudioChunk(buffer: AudioBuffer, sessionId: string)`
 
-The hot path. Called by `useServerTTS` after `decodeAudioData`. Internally:
+The hot path. Called by `useServerTTS` after `decodeAudioData` once
+the WebRTC offer has produced a `sessionId` (see `AvatarPanel`).
+Internally:
 
-1. Mix down to mono (`mixToMono`).
-2. Resample to 16 kHz if needed (`resampleLinear`).
-3. Pack float32 → Int16 little-endian (`float32ToInt16LE`).
-4. `socket.send(payload)` as a binary WebSocket frame.
-5. Increment `framesSent`.
+1. Defensive early return when `sessionId` is empty (the offer has
+   not completed yet) — the buffer is dropped, the speaker still
+   plays.
+2. Mix down to mono (`mixToMono`).
+3. Resample to 16 kHz if needed (`resampleLinear`).
+4. Pack float32 → Int16 little-endian (`float32ToInt16LE`).
+5. Prepend a 44-byte WAV header (`packWav`) so `soundfile.read()` on
+   the LiveTalking side can decode the bytes (`POST /humanaudio` does
+   not accept raw PCM).
+6. `fetch(\`${serverUrl}${audioPath}\`, { method: 'POST', body: formData })`
+   where `formData` has `sessionid` + `file` fields.
+7. Fire-and-forget: the response is **not awaited**. The audio path
+   must not block on the avatar backend.
+8. On `response.ok`, increment `framesSent` and clear `lastError`.
+   On `!response.ok` or fetch rejection, write the failure into
+   `lastError` and drop the frame.
 
-If the WebSocket is not open, the call is a **no-op** (the buffer is
-dropped). The audio still plays through the speaker.
-
-### `feedInt16Frame(frame: ArrayBuffer | Int16Array)`
-
-Low-level send for callers that already have a 16 kHz mono Int16 frame
-(e.g. an `AudioWorklet` pipeline). Not used by the current integration;
-reserved for the streaming follow-up.
+If `sessionId` is empty, or `connect()` has not been called, the
+call is a **no-op** (the buffer is dropped). The audio still plays
+through the speaker.
 
 ## Internal helpers
 
-### `resampleLinear(input, sourceRate, targetRate)` (line 79)
+### `resampleLinear(input, sourceRate, targetRate)` (line 83)
 
 Linear-interpolation resampler. Acceptable for speech audio where
 high-frequency content is not perceptually critical. For production
@@ -88,90 +98,97 @@ the smallest correct step that ships today.
 output[i] = input[lower] * (1 - fraction) + input[upper] * fraction
 ```
 
-### `float32ToInt16LE(samples)` (line 98)
+### `float32ToInt16LE(samples)` (line 102)
 
 Clamp float32 `[-1, 1]` to Int16 `[-32768, 32767]` (asymmetric — see
 `Math.round(sample * 0x8000)` for negative vs `0x7fff` for positive) and
 write little-endian.
 
-### `mixToMono(buffer)` (line 118)
+### `mixToMono(buffer)` (line 119)
 
 For a mono buffer, returns the underlying channel 0 view directly (no
 copy — downstream `resampleLinear` and `float32ToInt16LE` do not mutate
 the input). For multi-channel (stereo) buffers, averages all channels
 into a single `Float32Array`.
 
-## WebSocket protocol
+### `packWav(pcm, sampleRate)` (line 142)
 
-### 1. Open
+Prepends a 44-byte RIFF/WAVE header so the bytes can be decoded by
+`soundfile.read(BytesIO(...))` on the LiveTalking side.
 
-`new WebSocket(ws://localhost:8765/ws/audio)` with `binaryType = 'arraybuffer'`.
+| Field | Value |
+|---|---|
+| ChunkID | `RIFF` |
+| Format | `WAVE` |
+| Subchunk1ID | `fmt ` |
+| AudioFormat | `1` (PCM) |
+| NumChannels | `1` |
+| SampleRate | `sampleRate` (always 16000 from this bridge) |
+| ByteRate | `sampleRate * 2` |
+| BlockAlign | `2` |
+| BitsPerSample | `16` |
+| Subchunk2ID | `data` |
+| Subchunk2Size | `pcmInt16.length * 2` |
 
-### 2. On open — `init` frame (JSON text)
+The 44-byte header is the only RIFF layout MuseTalk's `soundfile`
+backend accepts; bare Int16 LE samples are rejected with a decoding
+error.
 
-Sent exactly once, only if `imageDataUrl` was provided:
+## HTTP protocol
+
+### 1. `POST /humanaudio` request
+
+```
+POST /humanaudio HTTP/1.1
+Host: localhost:8765
+Content-Type: multipart/form-data; boundary=...
+
+--boundary
+Content-Disposition: form-data; name="sessionid"
+
+<uuid>
+--boundary
+Content-Disposition: form-data; name="file"; filename="chunk.wav"
+Content-Type: audio/wav
+
+<44-byte WAV header><Int16 LE samples...>
+--boundary--
+```
+
+The `sessionid` is the UUID returned from `POST /offer`. The
+`file` is a single WAV blob (one TTS message). LiveTalking's
+`server/routes.py:90` route reads the file, calls
+`avatar_session.put_audio_file(filebytes, {})` which decodes via
+`soundfile.read(BytesIO(...))` and feeds it to the ASR queue in
+20 ms chunks.
+
+### 2. Response
 
 ```json
-{
-  "type": "init",
-  "image": "data:image/jpeg;base64,...",
-  "sampleRate": 16000,
-  "channels": 1,
-  "bitsPerSample": 16
-}
+{ "code": 0, "msg": "ok" }
 ```
 
-If the user's `imageDataUrl` is empty, the `init` frame is **omitted**.
-The backend then keeps whatever portrait it has (or rejects the connection,
-depending on implementation).
+`code != 0` is logged into `lastError` and the frame is dropped. The
+bridge never throws on the audio path.
 
-### 3. Audio frames (binary)
+### 3. Failure modes
 
-Each `feedAudioBuffer` produces one binary frame: a flat sequence of Int16
-samples (little-endian, mono, 16 kHz). Frame size in bytes = `samples × 2`.
+| Symptom | Cause | What the bridge does |
+|---|---|---|
+| `POST /humanaudio` returns `{"code":-1,"msg":"session not found"}` | `sessionid` invalid (e.g. peer reconnected, old session evicted) | Logs `lastError`, drops the frame |
+| `fetch` rejects | Network unreachable, CORS, server down | Logs `lastError`, drops the frame |
+| `soundfile.read` fails on server | Bytes were not a valid WAV (header missing or wrong format) | Server returns 500, bridge logs `lastError` |
+| `sessionId === ''` | `/offer` has not completed | Bridge no-ops the frame; the speaker still plays |
 
-The backend is expected to consume these and drive lip animation
-accordingly. There is no ACK protocol — the bridge fires frames as the
-TTS plays.
-
-### 4. Close
-
-The server may close the socket at any time. The bridge schedules a
-reconnect with exponential backoff (capped at 30 s) unless `disconnect()`
-was called explicitly by user code.
-
-`framesSent` is reset to `0` on every successful `socket.onopen`. The
-counter therefore reflects activity for the current connection only and
-is not cumulative across reconnects.
-
-## Reconnect logic
-
-`scheduleReconnect()` (line 311):
-
-```
-delay = min(30_000, 500 * 2^min(attempts, 6))
-```
-
-| Attempt | Delay (ms) |
-|---|---|
-| 1 | 500 |
-| 2 | 1000 |
-| 3 | 2000 |
-| 4 | 4000 |
-| 5 | 8000 |
-| 6 | 16000 |
-| 7+ | 30000 (capped) |
-
-Reconnect is suppressed while the user has explicitly called
-`disconnect()`. This matches the OpenChamber SSE reconnect policy in
-`packages/ui/src/sync/event-pipeline.ts` (long backoff cap, no aggressive
-retry on user-toggled-off state).
+**All failures are non-fatal to the speaker path.** The bridge exists
+purely as an enhancement; the user always hears the message even if the
+avatar backend is offline.
 
 ## Allocation policy
 
-Per-message buffers (`mixToMono`, `resampleLinear`, `float32ToInt16LE`)
-allocate fresh on each call and are immediately eligible for GC after
-`socket.send(payload)` returns. This is acceptable for the
+Per-message buffers (`mixToMono`, `resampleLinear`, `float32ToInt16LE`,
+`packWav`) allocate fresh on each call and are immediately eligible for
+GC after `fetch(POST, formData)` returns. This is acceptable for the
 speech-rate, short-buffer use case here: typical TTS frames are 1–5 s at
 16 kHz mono (~32–160 KB Int16) and the browser's young-generation GC
 reclaims them cheaply.
@@ -186,20 +203,6 @@ If allocation pressure becomes a real issue, the right fix is to move
 the conversion into an `AudioWorklet` and reuse a small ring buffer of
 `SharedArrayBuffer` chunks. See `Future work` below.
 
-## Failure modes
-
-| Symptom | Cause | What the bridge does |
-|---|---|---|
-| `socket.send` throws | WebSocket closed mid-send | Logs `lastError`, drops the frame |
-| `socket.onerror` fires | Network failure | Logs `lastError`, triggers reconnect |
-| `socket.onclose` fires | Server-side close | Schedules reconnect |
-| `new WebSocket(url)` throws | Bad URL scheme | Logs `lastError`, schedules reconnect |
-| `feedAudioBuffer` while disconnected | TTS plays during outage | Drops the frame silently |
-
-**All failures are non-fatal to the speaker path.** The bridge exists
-purely as an enhancement; the user always hears the message even if the
-avatar backend is offline.
-
 ## Future work
 
 - **Streaming**: replace the post-decode tee with an `AudioWorklet` that
@@ -208,9 +211,5 @@ avatar backend is offline.
 - **Sinc resampler**: replace `resampleLinear` with a windowed-sinc
   kernel. The 24 kHz → 16 kHz step currently rolls off some HF content
   that MuseTalk's mouth-region model would otherwise use.
-- **Bidirectional control**: LiveTalking can signal "end of utterance"
-  via the WebSocket. We currently infer end-of-message from the
-  AudioContext `onended` event; consuming server signals would let us
-  re-use the same frame for any number of partial replays.
 - **Heartbeat**: a 5 s ping/pong would help mobile networks detect silent
   drops faster than the 30 s TCP timeout.

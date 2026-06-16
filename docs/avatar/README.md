@@ -18,7 +18,7 @@ update the TTS hook"). It adds zero new server routes; all changes live in
 | [`setup.md`](./setup.md) | Install Kokoro-FastAPI and LiveTalking locally; verify endpoints |
 | [`config-store.md`](./config-store.md) | New avatar fields in `useConfigStore` (URL, image, enable, offset) |
 | [`tts-hook.md`](./tts-hook.md) | `useServerTTS` tee point and `start(when)` audio offset |
-| [`audio-bridge.md`](./audio-bridge.md) | `avatarAudioBridge.ts` — WebSocket PCM uplink reference |
+| [`audio-bridge.md`](./audio-bridge.md) | `avatarAudioBridge.ts` — HTTP multipart PCM upload reference |
 | [`avatar-panel.md`](./avatar-panel.md) | `AvatarPanel.tsx` — WebRTC peer + settings UI reference |
 | [`lipsync.md`](./lipsync.md) | Audio/video sync theory, how `avatarAudioOffsetMs` works |
 | [`troubleshooting.md`](./troubleshooting.md) | Common failure modes and how to diagnose them |
@@ -31,7 +31,7 @@ docker run -p 8880:8880 remsky/kokoro-fastapi:latest
 
 # 2) Avatar backend (LiveTalking on :8765)
 #    See setup.md for the exact clone + run sequence
-cd livetalking && python app.py --model musetalk --port 8765
+cd livetalking && python app.py --model musetalk --listenport 8765 --transport webrtc
 
 # 3) In OpenChamber Settings → Digital Human panel:
 #    LiveTalking server URL = http://localhost:8765
@@ -48,7 +48,7 @@ working end-to-end.
 
 | File | Change |
 |---|---|
-| `packages/ui/src/lib/voice/avatarAudioBridge.ts` | **NEW** — WebSocket PCM uplink (resample, mono mix, Int16 LE) |
+| `packages/ui/src/lib/voice/avatarAudioBridge.ts` | **NEW** — HTTP multipart PCM upload (resample, mono mix, Int16 LE, RIFF/WAVE header) |
 | `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx` | **NEW** — WebRTC peer + floating settings panel (uses shared `Input` / `NumberInput` / `Checkbox` / `Button`) |
 | `packages/ui/src/hooks/useServerTTS.ts` | MODIFIED — tee the decoded `AudioBuffer` to the bridge; honor `avatarAudioOffsetMs` on `start(when)` |
 | `packages/ui/src/stores/useConfigStore.ts` | MODIFIED — four new persisted avatar fields + quota-rollback safety on the portrait setter |

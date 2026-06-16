@@ -55,6 +55,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
   const setAvatarImageDataUrl = useConfigStore((state) => state.setAvatarImageDataUrl);
   const setAvatarEnabled = useConfigStore((state) => state.setAvatarEnabled);
   const setAvatarAudioOffsetMs = useConfigStore((state) => state.setAvatarAudioOffsetMs);
+  const setCurrentAvatarSessionId = useConfigStore((state) => state.setCurrentAvatarSessionId);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -331,6 +332,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    setCurrentAvatarSessionId('');
   }
 
   async function openPeer(serverUrl: string, imageDataUrl: string): Promise<void> {
@@ -365,9 +367,12 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
     if (!response.ok) {
       throw new Error(`Avatar backend HTTP ${response.status}`);
     }
-    const answer = (await response.json()) as { sdp: string; type: RTCSdpType };
+    const answer = (await response.json()) as { sdp: string; type: RTCSdpType; sessionid?: string };
     if (!answer?.sdp || !answer?.type) {
       throw new Error('Avatar backend returned invalid SDP');
+    }
+    if (answer.sessionid) {
+      setCurrentAvatarSessionId(answer.sessionid);
     }
     await peer.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
   }

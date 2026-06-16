@@ -14,10 +14,10 @@ delaying the audio to match the video.
 ```
                   ┌──── MuseTalk inference (~120 ms typical, GPU)
                   │
-WebSocket frame → │  ┌── WebRTC server-side buffering (~30 ms)
+POST /humanaudio →│  ┌── ASR queue + WebRTC server-side buffering (~30 ms)
                   │  │
                   ▼  ▼
-browser frame ready at t = ~150 ms after `feedAudioBuffer`
+browser frame ready at t = ~300 ms after `feedAudioChunk`
 ```
 
 The mouth is rendered for an audio frame that has not yet been heard.
@@ -53,9 +53,10 @@ delays are imperceptible to humans, but video-audio desync is jarring.
 | Component | Latency | Notes |
 |---|---|---|
 | MuseTalk inference (first frame) | 80–200 ms | GPU ≈ 80, CPU ≈ 200 |
+| `POST /humanaudio` upload + ASR queue | 100–300 ms | `fetch` body upload + LiveTalking's `put_audio_file` → `soundfile.read` → 20ms chunk queue |
 | WebRTC ICE / SDP / buffering | 20–50 ms | LAN to localhost is low |
 | Browser video decode | ~10 ms | Negligible |
-| **Total** | **~150 ms** | Default offset |
+| **Total** | **~300–500 ms** | Recommended starting offset |
 
 ## Tuning `avatarAudioOffsetMs`
 
@@ -71,6 +72,13 @@ adjustments:
 
 A good starting point: record a 5-second message, listen, observe the
 mouth, adjust by 10 ms increments until they align.
+
+> Note: when the audio bridge is in HTTP multipart mode (the default
+> for LiveTalking 2.x), the `fetch` upload + server-side
+> `soundfile.read` decode adds an extra 100–300 ms of latency compared
+> to a hypothetical WebSocket stream. The recommended starting
+> `avatarAudioOffsetMs` is **300 ms**, not 150 ms. Tune from there
+> using the table above.
 
 ## Why we do NOT use WebRTC audio track for sync
 
@@ -106,7 +114,7 @@ streaming design using `AudioWorklet` would:
 2. Reduce end-to-end latency by the entire MP3 download + decode time
    (~200–800 ms for a long message).
 
-The bridge already exposes `feedInt16Frame` (line 233) for callers that
-have a 16 kHz mono Int16 frame, ready for this work. The
+The bridge exposes `feedAudioChunk(audioBuffer, sessionId)` for callers
+that want to bypass `useServerTTS` and pipe directly. The
 `useServerTTS` refactor to wire `AudioWorklet` is a follow-up tracked
 in `audio-bridge.md` → Future work.

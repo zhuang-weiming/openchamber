@@ -21,14 +21,15 @@
  AudioBuffer (24 kHz float32, N channels)          │
      │                                             │
      ├────────────────┬────────────────────────────┘
-     │                │
-     ▼                ▼
- AudioContext      avatarAudioBridge
- (speaker)         (WebSocket PCM uplink)
-     │                │
-     │                │  16 kHz / 16-bit / mono / Int16 LE
-     │                ▼
-     │             LiveTalking / MuseTalk (:8765)
+      │                │
+      ▼                ▼
+  AudioContext      avatarAudioBridge
+  (speaker)         (HTTP multipart upload)
+      │                │
+      │                │  16 kHz / 16-bit / mono / Int16 LE
+      │                │  packed as a 44-byte WAV header + samples
+      │                ▼
+      │             LiveTalking / MuseTalk (:8765)
      │                │
      │                │  WebRTC video stream
      │                ▼
@@ -39,8 +40,8 @@
 ```
 
 The key property: **both sides consume the same `AudioBuffer`**. The speaker
-plays through `AudioContext.createBufferSource()`; the bridge resamples and
-forwards via WebSocket. Lipsync is implicit at the source.
+plays through `AudioContext.createBufferSource()`; the bridge resamples
+and uploads via `POST /humanaudio`. Lipsync is implicit at the source.
 
 ## Design decisions
 
@@ -53,7 +54,12 @@ forwards via WebSocket. Lipsync is implicit at the source.
 | Failure isolation | Kokoro failure kills avatar | **Avatar failure does not affect TTS** | Server failure kills both |
 | Electron / VSCode | Works | **Works** | Works |
 | Streaming future | Hard | **Easier** (AudioWorklet) | Hard |
-| Implementation | 1 line | **~40 lines** | ~60 lines |
+| Implementation | 1 line | **~80 lines (HTTP multipart)** | ~60 lines |
+
+> Wire-format note: Method B is implemented as `POST /humanaudio` with
+> `multipart/form-data` (LiveTalking 2.x). Older 1.x deployments that
+> accepted `WS /ws/audio` binary frames are no longer supported by the
+> default config; see `audio-bridge.md` for the protocol mapping.
 
 ### Why the server is untouched
 
@@ -77,19 +83,21 @@ forwards via WebSocket. Lipsync is implicit at the source.
 
 ### Singleton bridge, not per-message
 
-`getAvatarAudioBridge()` in `packages/ui/src/lib/voice/avatarAudioBridge.ts:359`
-returns a singleton. One WebSocket per avatar session (not per message).
-The `disconnect()` + `connect()` cycle happens when the user toggles the
+`getAvatarAudioBridge()` in `packages/ui/src/lib/voice/avatarAudioBridge.ts`
+returns a singleton that owns the configured server URL and the cached
+`imageDataUrl`. There is no long-lived connection — each
+`feedAudioChunk` is a fresh `fetch(POST, formData)`. The
+`disconnect()` + `connect()` cycle happens when the user toggles the
 feature or changes the server URL.
 
 ## Module ownership
 
 | Module | Owns | Called by |
 |---|---|---|
-| `useConfigStore` | Persisted avatar config (URL, image, enable, offset) | `AvatarPanel`, `useServerTTS`, `ChatContainer` |
+| `useConfigStore` | Persisted avatar config (URL, image, enable, offset, sessionid) | `AvatarPanel`, `useServerTTS`, `ChatContainer` |
 | `useServerTTS` | Fetch MP3 → decode → tee to bridge + speaker | Chat message `Say` handler |
-| `getAvatarAudioBridge` | WebSocket lifecycle, resample, PCM send | `useServerTTS` (audio), `AvatarPanel` (init setup) |
-| `AvatarPanel` | WebRTC peer, `<video>` element, settings UI | `ChatContainer` (conditional mount) |
+| `getAvatarAudioBridge` | HTTP multipart upload lifecycle, resample, PCM pack, RIFF/WAVE header | `useServerTTS` (audio upload) |
+| `AvatarPanel` | WebRTC peer, `/offer` handshake (returns sessionid), settings UI | `ChatContainer` (conditional mount) |
 | `LiveTalking` (external) | Audio → video inference, WebRTC output | — |
 | `Kokoro-FastAPI` (external) | Text → TTS audio (OpenAI-compatible) | OpenChamber's server-side TTS |
 
@@ -103,4 +111,4 @@ feature or changes the server URL.
    - User configures Digital Human → LiveTalking URL → upload portrait → enable
 5. On each assistant message: user clicks speaker → TTS plays → bridge pushes audio → LiveTalking animates → WebRTC feeds video
 
-WebSockets and WebRTC peer connect lazily when `avatarEnabled && avatarServerUrl` is true. No startup dependency on the avatar backend.
+WebRTC peer and audio upload connect lazily when `avatarEnabled && avatarServerUrl` is true. No startup dependency on the avatar backend.

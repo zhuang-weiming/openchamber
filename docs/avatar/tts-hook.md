@@ -2,7 +2,7 @@
 
 **File**: `packages/ui/src/hooks/useServerTTS.ts`
 
-## Where the tee happens (lines 302–312)
+## Where the tee happens (lines 311–315)
 
 ```ts
 const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
@@ -11,7 +11,8 @@ const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
 // mouth can move in sync with what is about to play through the speaker.
 if (avatarEnabled && avatarServerUrl) {
   const bridge = getAvatarAudioBridge();
-  bridge.feedAudioBuffer(audioBuffer);
+  const sessionId = useConfigStore.getState().currentAvatarSessionId;
+  bridge.feedAudioChunk(audioBuffer, sessionId);
 }
 ```
 
@@ -21,8 +22,13 @@ form of the TTS audio. It is consumed by **two paths in parallel**:
 ```
 AudioBuffer
   ├── ctx.createBufferSource() → GainNode → destination    (speaker)
-  └── bridge.feedAudioBuffer()                              (WebSocket)
+  └── bridge.feedAudioChunk()                               (POST /humanaudio)
 ```
+
+`sessionId` is read from the store via `getState()` (not a hook), so
+`speak` does not need to subscribe to it. The bridge no-ops when
+`sessionId` is empty, which happens between disabling the avatar and
+the next `openPeer()` completing.
 
 ### Why this is the right insertion point
 
@@ -33,7 +39,7 @@ AudioBuffer
 | `source.start()` after | Too late — the AudioContext would already have queued the buffer for playback and we'd have already lost the sync reference |
 | Inside `onended` | Does not help — the audio is over |
 
-## Audio offset for lipsync (lines 348–355)
+## Audio offset for lipsync (lines 354–361)
 
 ```ts
 const offsetSeconds = avatarEnabled && avatarServerUrl
@@ -53,7 +59,8 @@ storing, so the `Math.max(0, …)` here is defense-in-depth — by the time
 ### Why a delay is needed
 
 LiveTalking / MuseTalk inference has a per-frame latency of
-80–200 ms. The WebRTC pipeline adds another ~50 ms. If the speaker
+80–200 ms. The `POST /humanaudio` upload + ASR queue adds another
+100–300 ms. The WebRTC pipeline adds another ~50 ms. If the speaker
 plays the audio immediately (`source.start(0)`), the user hears the
 voice before the mouth starts moving — the classic "dubbed movie"
 effect.
@@ -74,6 +81,9 @@ value depends on:
 - Audio frame size (longer utterances have higher effective latency
   because the backend can pipeline)
 
+> See `lipsync.md` for the latency budget table — with HTTP multipart
+> uploads, the recommended starting offset is **300 ms**, not 150 ms.
+
 ### Micro-timing
 
 ```ts
@@ -89,21 +99,22 @@ macrotask scheduling or event loop jitter.
 ```ts
 if (avatarEnabled && avatarServerUrl) {
   const bridge = getAvatarAudioBridge();
-  bridge.feedAudioBuffer(audioBuffer);
+  const sessionId = useConfigStore.getState().currentAvatarSessionId;
+  bridge.feedAudioChunk(audioBuffer, sessionId);
 }
 ```
 
-The `feedAudioBuffer` call is **not wrapped in try/catch** because the
-bridge never throws on call — it only drops frames silently if the socket
-is closed. If the bridge were to throw (unexpected), the speaker path
-would not execute and the user would hear nothing. Adding a protective
-`try/catch` is acceptable but measuredly unnecessary given the bridge's
-contract.
+The `feedAudioChunk` call is **not wrapped in try/catch** because the
+bridge never throws on call — it only drops frames silently when
+`sessionId` is empty or the upload fetch fails. If the bridge were to
+throw (unexpected), the speaker path would not execute and the user
+would hear nothing. Adding a protective `try/catch` is acceptable but
+measuredly unnecessary given the bridge's contract.
 
 ## Hook dependency
 
 The `useCallback` dependency list on `speak` adds three new selectors
-(line 369):
+(line 372):
 
 ```ts
 avatarEnabled,
@@ -111,6 +122,8 @@ avatarServerUrl,
 avatarAudioOffsetMs,
 ```
 
-This means `speak` is re-created when the avatar config changes.
+`currentAvatarSessionId` is read via `useConfigStore.getState()` inside
+the callback, so it does not need to be in the dependency list. This
+means `speak` is re-created when the avatar config changes.
 That is fine — `speak` is called on user click (not on every render),
 and the recreate cost is negligible.

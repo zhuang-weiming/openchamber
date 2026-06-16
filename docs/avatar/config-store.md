@@ -10,11 +10,14 @@
 | `avatarImageDataUrl` | `string` | `''` (none) | `avatarImageDataUrl` | `setAvatarImageDataUrl(dataUrl)` |
 | `avatarEnabled` | `boolean` | `false` | `avatarEnabled` | `setAvatarEnabled(enabled)` |
 | `avatarAudioOffsetMs` | `number` | `150` | `avatarAudioOffsetMs` | `setAvatarAudioOffsetMs(ms)` |
+| `currentAvatarSessionId` | `string` | `''` (none) | `currentAvatarSessionId` | `setCurrentAvatarSessionId(id)` |
 
-All four are read from `localStorage` on initialization and written to
-`localStorage` on every setter call.
+All five are read from `localStorage` on initialization and written to
+`localStorage` on every setter call. `currentAvatarSessionId` is
+written by `AvatarPanel` on every successful `POST /offer` and cleared
+on `teardownPeer()`; it is not user-editable.
 
-## Initialization (lines 907–943)
+## Initialization (lines 913–956)
 
 ```ts
 avatarServerUrl: (() => {
@@ -108,8 +111,9 @@ established pattern for all voice fields in this store.
 
 | Subscriber | Field(s) consumed | File |
 |---|---|---|
-| `AvatarPanel` | `avatarServerUrl`, `avatarImageDataUrl`, `avatarEnabled`, `avatarAudioOffsetMs` | `avatar-panel.tsx:41-48` |
-| `useServerTTS` | `avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs` | `useServerTTS.ts:144-146` |
+| `AvatarPanel` | `avatarServerUrl`, `avatarImageDataUrl`, `avatarEnabled`, `avatarAudioOffsetMs`, `setCurrentAvatarSessionId` | `avatar-panel.tsx:50-58` |
+| `useServerTTS` | `avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs` | `useServerTTS.ts:145-147` |
+| `useServerTTS` (via `getState()`) | `currentAvatarSessionId` | `useServerTTS.ts:313` |
 | `ChatContainer` | `avatarEnabled`, `avatarServerUrl` | `ChatContainer.tsx:555-556` |
 
 Only the fields each component actually needs are selected via Zustand

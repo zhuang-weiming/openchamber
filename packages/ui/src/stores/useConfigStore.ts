@@ -677,6 +677,7 @@ interface ConfigStore {
     avatarImageDataUrl: string;
     avatarEnabled: boolean;
     avatarAudioOffsetMs: number;
+    currentAvatarSessionId: string;
     // STT (speech-to-text) settings
     sttProvider: 'browser' | 'server' | 'wasm';
     sttServerUrl: string;
@@ -710,6 +711,7 @@ interface ConfigStore {
     setAvatarImageDataUrl: (dataUrl: string) => void;
     setAvatarEnabled: (enabled: boolean) => void;
     setAvatarAudioOffsetMs: (ms: number) => void;
+    setCurrentAvatarSessionId: (id: string) => void;
     setSttProvider: (provider: 'browser' | 'server' | 'wasm') => void;
     setSttServerUrl: (url: string) => void;
     setSttApiKey: (apiKey: string) => void;
@@ -939,6 +941,13 @@ export const useConfigStore = create<ConfigStore>()(
                         }
                     }
                     return 150;
+                })(),
+                currentAvatarSessionId: (() => {
+                    if (typeof window !== 'undefined') {
+                        const saved = localStorage.getItem('currentAvatarSessionId');
+                        if (saved) return saved;
+                    }
+                    return '';
                 })(),
                 // STT provider: 'browser' (Web Speech API), 'server' (OpenAI-compat), 'wasm' (local Whisper)
                 sttProvider: (() => {
@@ -2291,6 +2300,13 @@ export const useConfigStore = create<ConfigStore>()(
                     set({ avatarAudioOffsetMs: ms });
                     if (typeof window !== 'undefined') {
                         localStorage.setItem('avatarAudioOffsetMs', String(ms));
+                    }
+                },
+
+                setCurrentAvatarSessionId: (id: string) => {
+                    set({ currentAvatarSessionId: id });
+                    if (typeof window !== 'undefined') {
+                        localStorage.setItem('currentAvatarSessionId', id);
                     }
                 },
 

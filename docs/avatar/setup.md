@@ -79,14 +79,32 @@ pip install -r requirements.txt
 ### Run
 
 ```bash
-python app.py --model musetalk --port 8765
+python app.py --model musetalk --listenport 8765 --transport webrtc
 ```
 
-Or with the bundled web demo:
+> Note: LiveTalking's current CLI uses `--listenport`, not `--port`. The
+> older `--port` flag was removed in the 2.x rewrite. If you see
+> `app.py: error: unrecognized arguments: --port`, you are on a 2.x build.
 
-```bash
-python app.py --model musetalk --port 8765 --transport webrtc
-```
+### macOS-specific gotchas
+
+Two issues surface on macOS Python 3.12 venvs that are not bugs:
+
+1. **`torchvision` not in `requirements.txt`**: MuseTalk's VAE module
+   (`avatars/musetalk/models/vae.py`) imports `torchvision.transforms`
+   but the upstream `requirements.txt` only lists `torch`. Install
+   `torchvision` into the venv before first run. For GPU, install the
+   CUDA-matching build per pytorch.org's install matrix — check
+   `torch.__version__` first.
+
+2. **`AVFFrameReceiver` / `AVFAudioReceiver` duplicate class warnings**:
+   `objc[...] Class AVFFrameReceiver is implemented in both .../av/
+   .dylibs/libavdevice... and .../cv2/.dylibs/libavdevice...`. PyAV and
+   `opencv-python` each bundle their own FFmpeg `libavdevice` on macOS.
+   This is noise, not a crash. It does not block MuseTalk inference.
+   To silence it, replace `opencv-python` with `opencv-python-headless`
+   or pin a single FFmpeg source — but neither is required to get the
+   avatar working.
 
 ### Verify the demo in a browser
 
@@ -96,15 +114,15 @@ open http://localhost:8765/web
 ```
 
 Upload a portrait + a short wav file. If the demo animates a face, the
-backend is healthy. The same `/offer` and `/ws/audio` endpoints the demo
-uses are what `AvatarPanel` and `avatarAudioBridge` will hit.
+backend is healthy. The same `/offer` and `/humanaudio` endpoints the
+demo uses are what `AvatarPanel` and `avatarAudioBridge` will hit.
 
 ### Endpoints consumed by OpenChamber
 
 | Endpoint | Direction | Used by | Payload |
 |---|---|---|---|
 | `POST /offer` | browser → LiveTalking | `AvatarPanel` (WebRTC offer/answer) | `{ sdp, type, image? }` |
-| `WS /ws/audio` | browser → LiveTalking | `avatarAudioBridge` (PCM uplink) | init JSON frame, then Int16 LE binary frames |
+| `POST /humanaudio` | browser → LiveTalking | `avatarAudioBridge` (PCM upload) | `multipart/form-data` with `sessionid` + `file` (16 kHz mono PCM WAV) |
 | `GET /` or `GET /web` | browser → LiveTalking | (manual smoke test) | HTML demo page |
 
 > The exact path names can drift between LiveTalking versions. If your
@@ -134,8 +152,8 @@ Human panel is in the top-right of the chat surface; it only renders when
 
 All three run on `localhost` for development. For production, point
 `avatarServerUrl` at a remote LiveTalking deployment; the panel accepts
-`http://` or `https://` (and the bridge auto-rewrites to `ws://` /
-`wss://`).
+`http://` or `https://` URLs. The bridge uses the URL as-is for HTTP
+`fetch` — there is no transport rewriting.
 
 ## Resource check
 

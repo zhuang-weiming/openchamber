@@ -64,25 +64,28 @@ non-2xx.
   is being scheduled in the future, but the message starts silent.
 - Reduce until the first word is audible.
 
-## 4. WebSocket reconnects forever
+## 4. Uploads fail with "session not found"
 
-Open Console. Look for `[avatar-bridge] closed` messages. Common causes:
+Open Console. Look for `[avatar-bridge] upload failed: ...` and the
+`lastError` exposed on the bridge state. Common causes:
 
 | Cause | Symptom |
 |---|---|
-| Wrong port in `avatarServerUrl` | `closed code=1006` immediately on connect |
-| LiveTalking crashed | `closed code=1006` after a few seconds |
-| CORS / authentication | The connection upgrade is rejected at the protocol level |
-| Browser blocks WS to non-localhost | The URL is HTTP while page is HTTPS (or vice versa) — browsers block `ws://` from `https://` pages |
+| `currentAvatarSessionId` is empty (no `/offer` handshake yet) | Upload is silently no-op'd by the bridge; no `lastError` is set |
+| Peer reconnected; old `sessionid` is stale | Server returns `{"code":-1,"msg":"session not found"}`; `lastError: "upload failed: HTTP 200"` if LiveTalking still 200s, or `lastError: "upload failed: HTTP 500"` on 500s |
+| LiveTalking crashed mid-session | Server returns 500; subsequent uploads also fail |
+| Wrong port in `avatarServerUrl` | `fetch` rejects with `TypeError: Failed to fetch`; `lastError: "upload failed: <message>"` |
 
-The bridge reconnects with exponential backoff (500 ms → 30 s cap). This
-is intentional — do not change it. If the user has toggled avatar off,
-call `disconnect()` instead.
+The bridge is **fire-and-forget**: failed uploads are logged and the
+frame is dropped. The speaker still plays. To recover, fix the
+underlying cause and trigger a new `openPeer()` (toggle avatar off and
+on, or change the server URL).
 
 ## 5. Image upload not persisted across page reloads
 
 - The base64 data URL exceeded the localStorage quota. The setter catches
-  the error (`useConfigStore.ts:2267`) and keeps the image in memory only.
+  the error (`useConfigStore.ts:2282`) and rolls back the in-memory copy
+  so the store and persistent storage stay in sync.
 - **Fix**: reduce image resolution before upload. A 256×256 JPEG at 80%
   quality is usually under 50 KB and persists fine.
 - Future: switch from localStorage to IndexedDB for image persistence
@@ -90,7 +93,7 @@ call `disconnect()` instead.
 
 ## 6. High CPU usage on mobile or low-power devices
 
-- Disable avatar when not in use. Each `feedAudioBuffer` resample pass
+- Disable avatar when not in use. Each `feedAudioChunk` resample pass
   walks the entire `Float32Array` in a tight loop. For a 30-second
   message at 24 kHz mono, that's 720,000 samples × linear interpolation
   per message.
@@ -114,18 +117,16 @@ The dev server URL is printed at startup.
 
 ## 8. Diagnostics: log levels
 
-The bridge currently logs:
+The bridge writes to `lastError` (exposed on `AvatarAudioBridgeState`)
+on every failure. There are no `console.log` calls in the HTTP path —
+failures are observable only via the state object.
 
-| Event | Log line |
+| Event | `lastError` value |
 |---|---|
-| Connected | `[avatar-bridge] connected to <url>` |
-| Closed | `[avatar-bridge] closed { code, reason }` |
-| Send error | `lastError: "send failed: <message>"` |
-| Init send error | `lastError: "init send failed: <message>"` |
-
-To silence all of these for production, pass `silent: true` in
-`AvatarAudioBridgeConfig`. The `useServerTTS` consumer does not pass
-this flag, so logs remain on by default.
+| `fetch` rejected (network, CORS) | `"upload failed: <Error message>"` |
+| `POST /humanaudio` returned non-2xx | `"upload failed: HTTP <status>"` |
+| `currentAvatarSessionId === ''` | (silent — frame dropped, no error reported) |
+| `connect()` not called or empty URL | (silent — frame dropped, no error reported) |
 
 `useServerTTS` adds two logs of its own around the tee:
 
@@ -139,13 +140,20 @@ returned a non-OK status.
 
 ## 9. LiveTalking version compatibility
 
-The endpoints `/offer` (HTTP) and `/ws/audio` (WebSocket) are
-documented in LiveTalking's README. They have changed across versions:
+The endpoints `/offer` (HTTP) and `/humanaudio` (HTTP multipart) are
+documented in LiveTalking's [docs/api.md](https://github.com/lipku/LiveTalking/blob/main/docs/api.md).
+They have changed across versions:
 
-| Version | Offer path | Audio path |
-|---|---|---|
-| 1.x | `POST /offer` | `WS /ws/audio` |
-| 0.8.x | `POST /human` | `WS /human/audio` |
+| Version | Offer path | Audio path | Audio format |
+|---|---|---|---|
+| 2.x (current fork) | `POST /offer` | `POST /humanaudio` | multipart/form-data `file` field, 16 kHz mono PCM WAV |
+| 1.x | `POST /offer` | `WS /ws/audio` | binary Int16 LE frames |
+| 0.8.x | `POST /human` | `WS /human/audio` | binary Int16 LE frames |
 
-If you are on an older version, override `buildOfferUrl` in
-`AvatarPanel.tsx:369` and `audioPath` in the bridge config.
+This fork uses the 2.x row. If you downgrade to 1.x, override
+`buildOfferUrl` in `AvatarPanel.tsx:374` and `audioPath` in the
+bridge config, and rewrite `feedAudioChunk` to use `new WebSocket(...)`
+and binary `socket.send(...)` instead of `fetch(POST, formData)`. The
+`packWav` helper can stay (the 1.x audio path also wants valid PCM),
+but you would need to chunk the upload by hand instead of one WAV per
+message.

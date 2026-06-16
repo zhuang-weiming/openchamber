@@ -1,21 +1,28 @@
 /**
  * Avatar Audio Bridge
  *
- * Streams TTS audio from the browser's AudioBuffer (decoded server TTS)
- * to a LiveTalking / MuseTalk backend over a single WebSocket as
- * 16 kHz mono 16-bit PCM frames.
+ * Forwards TTS audio from the browser's AudioBuffer (decoded server TTS)
+ * to a LiveTalking / MuseTalk backend as a multipart/form-data upload
+ * to `POST /humanaudio`. Each upload is a 16 kHz mono 16-bit PCM WAV
+ * blob (44-byte RIFF header + Int16 LE samples).
  *
  * Why this exists:
  *   OpenChamber's server-side TTS (useServerTTS) returns MP3 buffers that
  *   decode to AudioBuffers at the source sample rate (Kokoro emits 24 kHz,
  *   OpenAI emits 24 kHz, browser STT and macOS say emit other rates).
- *   MuseTalk / LiveTalking expect 16 kHz / 16-bit / mono PCM at the wire.
+ *   LiveTalking's `/humanaudio` endpoint (`server/routes.py:90`) decodes
+ *   the upload via `soundfile.read(BytesIO(...))` and feeds 20 ms
+ *   chunks into the ASR queue. Soundfile requires a recognized audio
+ *   container header — bare Int16 LE PCM is rejected.
  *
  *   This module:
- *     1. Maintains one persistent WebSocket per avatar session
+ *     1. Holds the configured server URL + cached imageDataUrl as state
  *     2. Resamples AudioBuffer -> 16 kHz mono on demand
  *     3. Packs float32 [-1, 1] samples into Int16 little-endian
- *     4. Sends frames as binary WebSocket messages
+ *     4. Prepends a 44-byte RIFF/WAVE header so soundfile can decode
+ *     5. Posts the WAV blob to /humanaudio with multipart/form-data
+ *        (fire-and-forget — the speaker path is never blocked on the
+ *        avatar backend)
  *
  * The bridge is intentionally decoupled from any playback path: the same
  * AudioBuffer is fed to both the speaker (AudioContext) and this bridge,
@@ -25,17 +32,20 @@
 const TARGET_SAMPLE_RATE = 16000;
 const BITS_PER_SAMPLE = 16;
 const CHANNELS = 1;
+const WAV_HEADER_BYTES = 44;
 
 export interface AvatarAudioBridgeConfig {
   /**
    * Base URL of the LiveTalking / MuseTalk backend, e.g. `http://localhost:8765`.
-   * The bridge will connect to `${baseUrl}/ws/audio` for the PCM uplink and
-   * use `${baseUrl}/offer` for the WebRTC offer (consumed by AvatarPanel).
+   * The bridge uploads to `${baseUrl}/humanaudio` (or `audioPath` if set).
+   * `AvatarPanel` uses `${baseUrl}/offer` for the WebRTC offer separately.
    */
   serverUrl: string;
   /**
-   * Optional reference image data URL. Sent once on connect so the backend
-   * can pick the avatar identity for the session.
+   * Optional reference image data URL. Sent with the WebRTC offer body
+   * in `AvatarPanel.openPeer()`. The bridge does not transmit it itself
+   * — it is cached here so a follow-up `connect()` call carries the same
+   * identity.
    */
   imageDataUrl?: string;
   /**
@@ -44,22 +54,17 @@ export interface AvatarAudioBridgeConfig {
    */
   silent?: boolean;
   /**
-   * Override the audio endpoint path. Defaults to `/ws/audio`.
+   * Override the audio endpoint path. Defaults to `/humanaudio`.
    */
   audioPath?: string;
-  /**
-   * WebSocket binary type. Defaults to `arraybuffer` because Int16 frames
-   * are sent as raw bytes.
-   */
-  binaryType?: BinaryType;
 }
 
 export interface AvatarAudioBridgeState {
-  /** A WebSocket is currently open and ready to receive frames. */
+  /** Last `connect()` succeeded and config is cached. */
   connected: boolean;
-  /** A WebSocket connect attempt is in flight. */
+  /** A `connect()` call is in flight (currently always synchronous — kept for API parity). */
   connecting: boolean;
-  /** Number of frames successfully sent since the last connect. */
+  /** Number of frames successfully dispatched since the last connect. */
   framesSent: number;
   /** Last error message captured, or null. */
   lastError: string | null;
@@ -92,20 +97,17 @@ function resampleLinear(input: Float32Array, sourceRate: number, targetRate: num
 
 /**
  * Convert a mono float32 PCM buffer (range [-1, 1]) to Int16 little-endian
- * bytes. Clamps overshoot to [-32768, 32767] to keep MuseTalk happy.
+ * samples. Clamps overshoot to [-32768, 32767] to keep MuseTalk happy.
  */
-function float32ToInt16LE(samples: Float32Array): ArrayBuffer {
-  const byteLength = samples.length * 2;
-  const buffer = new ArrayBuffer(byteLength);
-  const view = new DataView(buffer);
+function float32ToInt16LE(samples: Float32Array): Int16Array {
+  const out = new Int16Array(samples.length);
   for (let i = 0; i < samples.length; i += 1) {
     let sample = samples[i];
     if (sample > 1) sample = 1;
     else if (sample < -1) sample = -1;
-    const int16 = sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff);
-    view.setInt16(i * 2, int16, true);
+    out[i] = sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff);
   }
-  return buffer;
+  return out;
 }
 
 /**
@@ -129,8 +131,46 @@ function mixToMono(buffer: AudioBuffer): Float32Array {
   return output;
 }
 
+/**
+ * Pack Int16 LE PCM samples into a complete WAV file (44-byte RIFF header
+ * + samples). LiveTalking's `put_audio_file` calls `soundfile.read(BytesIO(...))`
+ * which requires a recognized audio container — bare PCM is rejected.
+ *
+ * Always emits 16 kHz / mono / 16-bit PCM (little-endian) which is what
+ * MuseTalk's ASR pipeline expects.
+ */
+function packWav(pcm: Int16Array, sampleRate: number): ArrayBuffer {
+  const dataSize = pcm.length * 2;
+  const buffer = new ArrayBuffer(WAV_HEADER_BYTES + dataSize);
+  const view = new DataView(buffer);
+
+  const writeString = (offset: number, s: string): void => {
+    for (let i = 0; i < s.length; i += 1) {
+      view.setUint8(offset + i, s.charCodeAt(i));
+    }
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, CHANNELS, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * CHANNELS * (BITS_PER_SAMPLE / 8), true);
+  view.setUint16(32, CHANNELS * (BITS_PER_SAMPLE / 8), true);
+  view.setUint16(34, BITS_PER_SAMPLE, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  const out = new Int16Array(buffer, WAV_HEADER_BYTES);
+  out.set(pcm);
+
+  return buffer;
+}
+
 class AvatarAudioBridgeImpl {
-  private socket: WebSocket | null = null;
   private listeners = new Set<StateListener>();
   private state: AvatarAudioBridgeState = {
     connected: false,
@@ -139,9 +179,6 @@ class AvatarAudioBridgeImpl {
     lastError: null,
   };
   private cfg: AvatarAudioBridgeConfig = { serverUrl: '' };
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private reconnectAttempts = 0;
-  private closedByUser = false;
 
   subscribe(listener: StateListener): () => void {
     this.listeners.add(listener);
@@ -156,8 +193,9 @@ class AvatarAudioBridgeImpl {
   }
 
   /**
-   * Open (or re-open) a WebSocket to the configured avatar backend.
-   * Safe to call multiple times; the most recent config wins.
+   * Cache the server URL (and optional image data URL). Safe to call
+   * multiple times — the most recent config wins. The bridge holds no
+   * long-lived connection; each `feedAudioChunk` is a fresh HTTP POST.
    */
   connect(config: AvatarAudioBridgeConfig): void {
     const normalized = this.normalizeConfig(config);
@@ -165,77 +203,65 @@ class AvatarAudioBridgeImpl {
       this.setState({ lastError: 'avatarServerUrl is empty' });
       return;
     }
-
-    const sameConfig = this.cfg.serverUrl === normalized.serverUrl
-      && this.cfg.audioPath === normalized.audioPath
-      && this.cfg.binaryType === normalized.binaryType;
-
     this.cfg = normalized;
-    this.closedByUser = false;
-
-    if (this.socket && sameConfig && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    this.teardownSocket();
-    this.openSocket();
+    this.setState({ connected: true, connecting: false, framesSent: 0, lastError: null });
   }
 
   disconnect(): void {
-    this.closedByUser = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.teardownSocket();
-    this.setState({ connected: false, connecting: false });
+    this.cfg = { serverUrl: '' };
+    this.setState({ connected: false, connecting: false, framesSent: 0, lastError: null });
   }
 
   /**
    * Push a single TTS AudioBuffer to the avatar backend. The buffer is
-   * decoded (mono mix) and resampled to 16 kHz once, then forwarded as
-   * one or more Int16 LE frames.
+   * mixed to mono, resampled to 16 kHz, packed as a 16-bit PCM WAV
+   * (44-byte RIFF header + Int16 LE samples), and POSTed to
+   * `${serverUrl}/humanaudio` with `sessionid` + `file` form fields.
    *
-   * The bridge is failure-tolerant: if the socket is not open, the
-   * call is a no-op (the AudioBuffer is dropped). Audio playback on the
-   * speaker side is unaffected; avatar only mirrors what it can.
+   * The upload is fire-and-forget: the caller never observes the HTTP
+   * response. The speaker path is unaffected if the avatar backend is
+   * offline or returns an error.
+   *
+   * Returns silently when:
+   *   - `connect()` has not been called
+   *   - `sessionId` is empty (the WebRTC `/offer` has not completed)
+   *   - the upload fetch throws (e.g. network unreachable)
    */
-  feedAudioBuffer(buffer: AudioBuffer): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+  feedAudioChunk(buffer: AudioBuffer, sessionId: string): void {
+    if (!this.cfg.serverUrl) {
       return;
     }
+    if (!sessionId) {
+      return;
+    }
+
     const mono = mixToMono(buffer);
     const sourceRate = buffer.sampleRate;
     const resampled = sourceRate === TARGET_SAMPLE_RATE
       ? mono
       : resampleLinear(mono, sourceRate, TARGET_SAMPLE_RATE);
-    const payload = float32ToInt16LE(resampled);
-    try {
-      this.socket.send(payload);
-      this.setState({ framesSent: this.state.framesSent + 1, lastError: null });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.setState({ lastError: `send failed: ${message}` });
-    }
-  }
+    const int16 = float32ToInt16LE(resampled);
+    const wav = packWav(int16, TARGET_SAMPLE_RATE);
 
-  /**
-   * Low-level send for callers that already have a 16 kHz mono Int16
-   * frame (e.g. an AudioWorklet pipeline). Provided for the streaming
-   * follow-up work; not used by the current integration.
-   */
-  feedInt16Frame(frame: ArrayBuffer | Int16Array): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    const payload = frame instanceof ArrayBuffer ? frame : frame.buffer;
-    try {
-      this.socket.send(payload);
-      this.setState({ framesSent: this.state.framesSent + 1, lastError: null });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.setState({ lastError: `send failed: ${message}` });
-    }
+    const form = new FormData();
+    form.set('sessionid', sessionId);
+    form.set('file', new Blob([wav], { type: 'audio/wav' }), 'chunk.wav');
+
+    const audioPath = this.cfg.audioPath ?? '/humanaudio';
+    const url = `${this.cfg.serverUrl}${audioPath}`;
+
+    void fetch(url, { method: 'POST', body: form })
+      .then((response) => {
+        if (!response.ok) {
+          this.setState({ lastError: `upload failed: HTTP ${response.status}` });
+          return;
+        }
+        this.setState({ framesSent: this.state.framesSent + 1, lastError: null });
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.setState({ lastError: `upload failed: ${message}` });
+      });
   }
 
   private normalizeConfig(input: AvatarAudioBridgeConfig): AvatarAudioBridgeConfig {
@@ -244,101 +270,13 @@ class AvatarAudioBridgeImpl {
       serverUrl,
       imageDataUrl: input.imageDataUrl,
       silent: input.silent ?? false,
-      audioPath: input.audioPath ?? '/ws/audio',
-      binaryType: input.binaryType ?? 'arraybuffer',
+      audioPath: input.audioPath ?? '/humanaudio',
     };
-  }
-
-  private openSocket(): void {
-    const { serverUrl, imageDataUrl, silent } = this.cfg;
-    const audioPath = this.cfg.audioPath ?? '/ws/audio';
-    const binaryType: BinaryType = this.cfg.binaryType ?? 'arraybuffer';
-    const url = this.toWebSocketUrl(serverUrl, audioPath);
-    this.setState({ connecting: true, lastError: null });
-    let socket: WebSocket;
-    try {
-      socket = new WebSocket(url);
-      socket.binaryType = binaryType;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.setState({ connecting: false, lastError: `socket init failed: ${message}` });
-      this.scheduleReconnect();
-      return;
-    }
-
-    this.socket = socket;
-
-    socket.onopen = () => {
-      this.reconnectAttempts = 0;
-      this.setState({ connected: true, connecting: false, lastError: null, framesSent: 0 });
-      if (imageDataUrl) {
-        try {
-          socket.send(JSON.stringify({ type: 'init', image: imageDataUrl, sampleRate: TARGET_SAMPLE_RATE, channels: CHANNELS, bitsPerSample: BITS_PER_SAMPLE }));
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.setState({ lastError: `init send failed: ${message}` });
-        }
-      }
-      if (!silent) {
-        console.log('[avatar-bridge] connected to', url);
-      }
-    };
-
-    socket.onerror = (event) => {
-      const message = (event as Event & { message?: string }).message ?? 'WebSocket error';
-      this.setState({ lastError: message });
-    };
-
-    socket.onclose = (event) => {
-      this.socket = null;
-      this.setState({ connected: false, connecting: false });
-      if (!silent) {
-        console.log('[avatar-bridge] closed', { code: event.code, reason: event.reason });
-      }
-      if (!this.closedByUser) {
-        this.scheduleReconnect();
-      }
-    };
-  }
-
-  private scheduleReconnect(): void {
-    if (this.reconnectTimer || this.closedByUser) return;
-    this.reconnectAttempts += 1;
-    const delay = Math.min(30_000, 500 * 2 ** Math.min(this.reconnectAttempts, 6));
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (!this.closedByUser) this.openSocket();
-    }, delay);
-  }
-
-  private teardownSocket(): void {
-    if (!this.socket) return;
-    try {
-      this.socket.onopen = null;
-      this.socket.onclose = null;
-      this.socket.onerror = null;
-      this.socket.onmessage = null;
-      if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
-        this.socket.close(1000, 'teardown');
-      }
-    } catch {
-      // Ignore close-time errors; the socket is going away regardless.
-    }
-    this.socket = null;
   }
 
   private setState(patch: Partial<AvatarAudioBridgeState>): void {
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) listener(this.state);
-  }
-
-  private toWebSocketUrl(baseHttpUrl: string, path: string): string {
-    if (!baseHttpUrl) return path;
-    if (baseHttpUrl.startsWith('ws://') || baseHttpUrl.startsWith('wss://')) {
-      return `${baseHttpUrl.replace(/\/+$/, '')}${path}`;
-    }
-    const replaced = baseHttpUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
-    return `${replaced.replace(/\/+$/, '')}${path}`;
   }
 }
 

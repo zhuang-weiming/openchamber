@@ -305,10 +305,13 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
 
       // Mirror this AudioBuffer to the avatar backend so the digital-human
       // mouth can move in sync with what is about to play through the speaker.
-      // Failure here is non-fatal: TTS audio still plays.
+      // The bridge uploads via multipart/form-data and is fire-and-forget;
+      // TTS audio still plays if the upload fails or the avatar session
+      // is not yet established.
       if (avatarEnabled && avatarServerUrl) {
         const bridge = getAvatarAudioBridge();
-        bridge.feedAudioBuffer(audioBuffer);
+        const sessionId = useConfigStore.getState().currentAvatarSessionId;
+        bridge.feedAudioChunk(audioBuffer, sessionId);
       }
 
       // Create source node

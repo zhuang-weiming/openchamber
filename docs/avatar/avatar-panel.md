@@ -59,7 +59,7 @@ All dimensions: `w-72` (288 px), sidebar-width card.
 
 ## WebRTC peer lifecycle
 
-`openPeer()` (line 329–366):
+`openPeer()` (line 338–378):
 
 1. **Teardown previous peer** — close old `RTCPeerConnection`, stop all
    senders, detach `srcObject`.
@@ -68,21 +68,32 @@ All dimensions: `w-72` (288 px), sidebar-width card.
 4. **Bind `ontrack`** — attach incoming video/audio to `<video>` element.
 5. `createOffer()` → `setLocalDescription()`.
 6. `POST /offer` with `{ sdp, type, image? }` to the LiveTalking URL.
-7. **Parse answer** — `await response.json()` must return `{ sdp, type }`.
-8. `setRemoteDescription()`.
+7. **Parse answer** — `await response.json()` must return
+   `{ sdp, type, sessionid }`. The `sessionid` is a UUID assigned by
+   LiveTalking's `SessionManager` (`server/session_manager.py:11`) on
+   offer receipt.
+8. **Persist `sessionid`** — `setCurrentAvatarSessionId(answer.sessionid)`
+   writes the UUID to `useConfigStore`. The audio bridge
+   (`useServerTTS.ts:311-315`) reads it back via `getState()` to know
+   which `sessionid` to put in the `POST /humanaudio` form. Without
+   this step, all subsequent TTS audio uploads are no-ops.
+9. `setRemoteDescription()`.
 
-`teardownPeer()` (line 314–327):
+`teardownPeer()` (line 322–336):
 - Closes all senders and tracks.
 - Closes the `RTCPeerConnection`.
 - Sets `videoRef.current.srcObject = null`.
+- **Clears the persisted `sessionid`** via
+  `setCurrentAvatarSessionId('')` so a stale UUID never leaks into a
+  later bridge upload.
 
 ### Why `audio` transceiver is added but unused
 
 LiveTalking's `addTransceiver('audio', 'recvonly')` tells the backend the
 browser is willing to receive an audio track. The audio bridge, however,
-sends PCM over WebSocket — the WebRTC audio track is **not used for
-playback**. It exists only to keep the SDP negotiation symmetrical in case
-the backend expects both media lines.
+uploads PCM via `POST /humanaudio` — the WebRTC audio track is **not used
+for playback**. It exists only to keep the SDP negotiation symmetrical in
+case the backend expects both media lines.
 
 The actual audio for the user's ears is played via the existing
 `AudioContext` pipeline (same as any TTS in OpenChamber). This preserves
@@ -117,9 +128,14 @@ the app's existing autoplay / focus behavior on iOS and Electron.
 | Enable checkbox | shared `<Checkbox>` | `avatarEnabled` / `setAvatarEnabled` | Persisted to localStorage |
 | Server URL input | shared `<Input>` | `avatarServerUrl` / local draft state | Draft only; saved on Apply |
 | Portrait file picker | raw `<input type="file">` | `avatarImageDataUrl` / `setAvatarImageDataUrl` | Rejected if `> PORTRAIT_MAX_BYTES` (512 KB) |
-| Remove portrait | shared `<Button variant="ghost" size="xs">` | `setAvatarImageDataUrl('')` | Clears image; bridge reconnects without init frame |
+| Remove portrait | shared `<Button variant="ghost" size="xs">` | `setAvatarImageDataUrl('')` | Clears image; the next `openPeer()` re-sends the offer without the `image` field, so LiveTalking falls back to its default avatar |
 | Audio offset | shared `<NumberInput>` | `avatarAudioOffsetMs` | Min 0, max 2000, step 10; commits on change |
 | Apply button | shared `<Button variant="default" size="sm">` | `setAvatarServerUrl` | Saves server URL draft |
+
+The bridge also consumes `currentAvatarSessionId` from the store, but
+that field is **not** user-editable — it is written automatically by
+`openPeer()` step 8 and cleared by `teardownPeer()`. See
+`audio-bridge.md` for the multipart upload protocol.
 
 The Audio offset commits directly to the store on every change (no
 Apply needed) — the value is read on the next `speak()` call, and
