@@ -16,7 +16,7 @@ update the TTS hook"). It adds zero new server routes; all changes live in
 |---|---|
 | [`architecture.md`](./architecture.md) | System diagram, data flow, design decisions, why-this-stack |
 | [`setup.md`](./setup.md) | Install Kokoro-FastAPI and LiveTalking locally; verify endpoints |
-| [`config-store.md`](./config-store.md) | New avatar fields in `useConfigStore` (URL, image, enable, offset) |
+| [`config-store.md`](./config-store.md) | New avatar fields in `useConfigStore` (URL, enable, offset; image reserved) |
 | [`tts-hook.md`](./tts-hook.md) | `useServerTTS` tee point and `start(when)` audio offset |
 | [`audio-bridge.md`](./audio-bridge.md) | `avatarAudioBridge.ts` — HTTP multipart PCM upload reference |
 | [`avatar-panel.md`](./avatar-panel.md) | `AvatarPanel.tsx` — WebRTC peer + settings UI reference |
@@ -30,30 +30,31 @@ update the TTS hook"). It adds zero new server routes; all changes live in
 docker run -p 8880:8880 remsky/kokoro-fastapi:latest
 
 # 2) Avatar backend (LiveTalking on :8765)
-#    See setup.md for the exact clone + run sequence
-cd livetalking && python app.py --model musetalk --listenport 8765 --transport webrtc
+#    See setup.md for the exact clone + run sequence.
+#    wav2lip is the recommended default — language-agnostic mel
+#    pipeline; good English lips without the whisper-tiny encoder
+#    that MuseTalk uses.
+cd livetalking && python app.py --model wav2lip --avatar_id wav2lip256_avatar1 --listenport 8765 --transport webrtc
 
-# 3) In OpenChamber Settings → Digital Human panel:
+# 3) In the Digital Human panel (top-right of the chat surface):
 #    LiveTalking server URL = http://localhost:8765
 #    Enable = on
-#    Upload a portrait
 #    Click the speaker icon on any assistant message
 ```
 
 If the speaker button on a message plays Kokoro's voice and the floating
-panel in the top-right of the chat shows a moving face, the integration is
-working end-to-end.
+panel shows a moving face, the integration is working end-to-end.
 
 ## Files touched by this feature
 
 | File | Change |
 |---|---|
 | `packages/ui/src/lib/voice/avatarAudioBridge.ts` | **NEW** — HTTP multipart PCM upload (resample, mono mix, Int16 LE, RIFF/WAVE header) |
-| `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx` | **NEW** — WebRTC peer + floating settings panel (uses shared `Input` / `NumberInput` / `Checkbox` / `Button`) |
+| `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx` | **NEW** — WebRTC peer + floating settings panel (uses shared `Input` / `NumberInput` / `Checkbox`) |
 | `packages/ui/src/hooks/useServerTTS.ts` | MODIFIED — tee the decoded `AudioBuffer` to the bridge; honor `avatarAudioOffsetMs` on `start(when)` |
-| `packages/ui/src/stores/useConfigStore.ts` | MODIFIED — four new persisted avatar fields + quota-rollback safety on the portrait setter |
+| `packages/ui/src/stores/useConfigStore.ts` | MODIFIED — five new persisted avatar fields (image field reserved, no UI yet) |
 | `packages/ui/src/lib/i18n/messages/*.ts` | MODIFIED — added `chat.avatar.*` keys in 9 locales |
-| `packages/ui/src/components/chat/ChatContainer.tsx` | MODIFIED — mount `AvatarPanel` top-right when enabled and configured |
+| `packages/ui/src/components/chat/ChatContainer.tsx` | MODIFIED — mount `AvatarPanel` top-right on non-mobile viewports |
 
 The server (`packages/web/server/lib/tts/`) is **not modified** — both `/api/tts/speak`
 and `/api/tts/say/speak` continue to serve MP3/PCM exactly as before, and the
@@ -78,7 +79,7 @@ non-negotiable conventions:
 - **Theme tokens only** — every color references `currentTheme.colors.*`
   or theme CSS variables (`--surface-*`, `--interactive-*`, `--status-*`).
   No hardcoded hex or Tailwind color utilities.
-- **Shared UI primitives** — `Button`, `Checkbox`, `Input`, `NumberInput`
+- **Shared UI primitives** — `Checkbox`, `Input`, `NumberInput`
   come from `packages/ui/src/components/ui/`. No raw `<button>` or
   `<input type="checkbox">`.
 - **Icon sprite** — every icon goes through the shared `<Icon>`
@@ -86,13 +87,14 @@ non-negotiable conventions:
 - **i18n** — every user-visible string lives in
   `packages/ui/src/lib/i18n/messages/*.ts`. The `chat.avatar.*` namespace
   is added in all 9 supported locales.
-- **Toasts** — user-visible feedback (size limit, quota exceeded) goes
-  through the `toast` wrapper from `@/components/ui`, not `sonner` directly.
+- **Toasts** — user-visible feedback goes through the `toast` wrapper
+  from `@/components/ui`, not `sonner` directly. (No toasts are
+  currently wired in the panel — the only existing toast keys are
+  reserved for the future portrait picker.)
 - **Persistence** — voice fields use the manual `localStorage` pattern
   established by the rest of `useConfigStore`. They are deliberately
   **not** in the `persist()` partializer so zustand does not re-serialize
   the (potentially large) image data URL on every keystroke.
 - **Failure isolation** — the bridge never throws on the audio path;
-  portrait failures roll the store back and surface a toast; WebRTC
-  failures render inline in the panel. The chat surface is never
+  WebRTC failures render inline in the panel. The chat surface is never
   affected.

@@ -2,17 +2,17 @@
 
 The AvatarPanel is a floating settings + video panel anchored in the
 top-right corner of the chat surface. It runs the WebRTC peer lifecycle,
-displays the avatar's face, and lets the user configure server URL, portrait,
-and sync offset.
+displays the avatar's face, and lets the user configure the server URL
+and audio sync offset.
 
 **File**: `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx`
 
 ## Mounting
 
-In `packages/ui/src/components/chat/ChatContainer.tsx:944`:
+In `packages/ui/src/components/chat/ChatContainer.tsx:941`:
 
 ```tsx
-{avatarEnabled && avatarServerUrl && !isMobile && (
+{!isMobile && (
   <div className="pointer-events-none absolute right-3 top-3 z-20">
     <div className="pointer-events-auto">
       <AvatarPanel side="right" />
@@ -22,6 +22,10 @@ In `packages/ui/src/components/chat/ChatContainer.tsx:944`:
 ```
 
 - Only renders on non-mobile viewports (`!isMobile`).
+- Always mounted when on desktop — the panel shows a placeholder
+  ("Avatar disabled") until `avatarEnabled` is true and a server URL is
+  configured. This lets the user discover the toggle without hunting in
+  a settings menu.
 - Positioned absolutely inside the chat container — does not affect the
   flow layout of the message list or input area.
 - The outer `<div>` has `pointer-events-none` so clicks pass through to
@@ -43,15 +47,10 @@ In `packages/ui/src/components/chat/ChatContainer.tsx:944`:
 │ [check icon] Live                   │  ← connection status
 ├──────────────────────────────────────┤
 │ LiveTalking server URL              │
-│ [http://localhost:8765           ]  │
-├──────────────────────────────────────┤
-│ Portrait (image)                    │
-│ [Choose File]  [Remove portrait]    │
+│ [http://localhost:8765           ]  │  ← debounced commit (no Apply)
 ├──────────────────────────────────────┤
 │ Audio offset (ms) — sync delay      │
 │ [150                              ] │
-├──────────────────────────────────────┤
-│ [           Apply            ]       │
 └──────────────────────────────────────┘
 ```
 
@@ -59,27 +58,28 @@ All dimensions: `w-72` (288 px), sidebar-width card.
 
 ## WebRTC peer lifecycle
 
-`openPeer()` (line 338–378):
+`openPeer()` (line 292):
 
 1. **Teardown previous peer** — close old `RTCPeerConnection`, stop all
    senders, detach `srcObject`.
 2. **Create peer** with Google STUN (`stun:stun.l.google.com:19302`).
 3. **Add transceivers** for `video + audio` (both `recvonly`).
-4. **Bind `ontrack`** — attach incoming video/audio to `<video>` element.
+4. **Bind `ontrack`** — attach incoming video stream to `<video>` and
+   **stop the WebRTC audio track** (see Safari note below).
 5. `createOffer()` → `setLocalDescription()`.
-6. `POST /offer` with `{ sdp, type, image? }` to the LiveTalking URL.
+6. `POST /offer` with `{ sdp, type }` to the LiveTalking URL.
 7. **Parse answer** — `await response.json()` must return
    `{ sdp, type, sessionid }`. The `sessionid` is a UUID assigned by
    LiveTalking's `SessionManager` (`server/session_manager.py:11`) on
    offer receipt.
 8. **Persist `sessionid`** — `setCurrentAvatarSessionId(answer.sessionid)`
    writes the UUID to `useConfigStore`. The audio bridge
-   (`useServerTTS.ts:311-315`) reads it back via `getState()` to know
+   (`useServerTTS.ts:306-315`) reads it back via `getState()` to know
    which `sessionid` to put in the `POST /humanaudio` form. Without
    this step, all subsequent TTS audio uploads are no-ops.
 9. `setRemoteDescription()`.
 
-`teardownPeer()` (line 322–336):
+`teardownPeer()` (line 276):
 - Closes all senders and tracks.
 - Closes the `RTCPeerConnection`.
 - Sets `videoRef.current.srcObject = null`.
@@ -98,6 +98,13 @@ case the backend expects both media lines.
 The actual audio for the user's ears is played via the existing
 `AudioContext` pipeline (same as any TTS in OpenChamber). This preserves
 the app's existing autoplay / focus behavior on iOS and Electron.
+
+**Safari-specific**: in `ontrack` we call
+`stream.getAudioTracks().forEach(track => track.stop())` (line 311)
+before binding the stream to `<video>`. In Safari, an unstopped audio
+track on a `<video srcObject>` claims the audio output device and
+silences the `AudioContext` TTS path. Chrome and Edge don't have this
+conflict, so the explicit stop is a Safari-targeted no-op there.
 
 ## Connection states
 
@@ -119,49 +126,57 @@ the app's existing autoplay / focus behavior on iOS and Electron.
 |---|---|
 | `autoPlay` | Start rendering as soon as `srcObject` is set |
 | `playsInline` | Required on iOS Safari to avoid fullscreen takeover |
-| `muted` | Prevents AudioContext conflicts — WebRTC audio track is not used |
+| `muted` | Suppresses the (already stopped) WebRTC audio track; actual audio plays through the `AudioContext` TTS path. `muted` alone is not enough on Safari — see `ontrack` note above. |
 
 ## User controls
 
 | Control | Component | Store binding | Notes |
 |---|---|---|---|
 | Enable checkbox | shared `<Checkbox>` | `avatarEnabled` / `setAvatarEnabled` | Persisted to localStorage |
-| Server URL input | shared `<Input>` | `avatarServerUrl` / local draft state | Draft only; saved on Apply |
-| Portrait file picker | raw `<input type="file">` | `avatarImageDataUrl` / `setAvatarImageDataUrl` | Rejected if `> PORTRAIT_MAX_BYTES` (512 KB) |
-| Remove portrait | shared `<Button variant="ghost" size="xs">` | `setAvatarImageDataUrl('')` | Clears image; the next `openPeer()` re-sends the offer without the `image` field, so LiveTalking falls back to its default avatar |
+| Server URL input | shared `<Input>` | `avatarServerUrl` / local draft state | Draft is debounced 500ms then committed; Enter commits immediately |
 | Audio offset | shared `<NumberInput>` | `avatarAudioOffsetMs` | Min 0, max 2000, step 10; commits on change |
-| Apply button | shared `<Button variant="default" size="sm">` | `setAvatarServerUrl` | Saves server URL draft |
 
 The bridge also consumes `currentAvatarSessionId` from the store, but
 that field is **not** user-editable — it is written automatically by
 `openPeer()` step 8 and cleared by `teardownPeer()`. See
 `audio-bridge.md` for the multipart upload protocol.
 
-The Audio offset commits directly to the store on every change (no
-Apply needed) — the value is read on the next `speak()` call, and
-applying it mid-utterance would cause a one-off glitch that is worse
-than a slightly stale value.
+The Audio offset commits directly to the store on every change — the
+value is read on the next `speak()` call, and applying it mid-utterance
+would cause a one-off glitch that is worse than a slightly stale value.
 
-Server URL still uses a draft + Apply pattern because the URL change
-also triggers a `bridge.connect()` round-trip and a WebRTC peer
-renegotiation; we don't want to fire those on every keystroke.
+Server URL uses a debounced-commit pattern (`useDebouncedValue` with
+500 ms delay) instead of an explicit Apply button. The debounce
+guarantees that only the final value triggers the `bridge.connect()`
+round-trip and the WebRTC peer renegotiation, so the user can type a
+full URL without the panel reconnecting on every keystroke. Pressing
+Enter flushes the commit immediately. This matches the "live save"
+style used by the rest of the OpenChamber settings — no Save / Apply
+button — and avoids a Safari-specific bug where the previous
+draft + Apply pattern lost clicks across the
+`pointer-events-none` / `pointer-events-auto` wrapper around the panel.
+
+### Avatar identity
+
+The avatar face is determined by LiveTalking's `--avatar_id` startup
+parameter, not by anything the user configures in this panel. The
+`avatarImageDataUrl` field in `useConfigStore` is reserved for a future
+portrait picker UI — it is currently unwired (no input element calls
+its setter), so the panel never sends an `image` field on `POST /offer`.
+LiveTalking falls back to its default avatar in that case.
 
 ### Shared UI primitives
 
-This component is one of the first in the codebase to use **all four**
-of the shared form primitives (`Input`, `NumberInput`, `Checkbox`,
-`Button`) in a single panel. Where the previous version used raw HTML
-elements with hand-rolled Tailwind classes, the current version defers to
-`packages/ui/src/components/ui/*` so:
+This component uses three of the shared form primitives (`Input`,
+`NumberInput`, `Checkbox`). Where the previous version used raw HTML
+elements with hand-rolled Tailwind classes, the current version
+defers to `packages/ui/src/components/ui/*` so:
 
 - `Input` provides focus rings, hover transitions, and error states for
   free.
 - `NumberInput` provides mobile +/- buttons and step normalization.
 - `Checkbox` provides `ariaLabel`, indeterminate state, and Base UI's
   built-in keyboard handling.
-- `Button` provides the theme-aligned `variant="default"` (primary tint)
-  for the CTA, `variant="ghost"` for the inline destructive action, and
-  the squircle/rounded-[10px] shape language used everywhere else.
 
 ## Internationalization
 
@@ -174,16 +189,21 @@ across all 9 supported locales (en, zh-CN, zh-TW, es, fr, ko, pl, pt-BR, uk).
 | `chat.avatar.title` | Panel header |
 | `chat.avatar.enableLabel` | Checkbox label and aria-label |
 | `chat.avatar.disabledPlaceholder` | Empty-state hint when toggled off |
-| `chat.avatar.uploadPrompt` | Empty-state hint when no portrait |
 | `chat.avatar.connectionFailed` | Fallback message when WebRTC fails |
 | `chat.avatar.serverUrlLabel` / `.serverUrlPlaceholder` | URL field |
-| `chat.avatar.portraitLabel` | Portrait file picker label |
-| `chat.avatar.removePortrait` | Inline destructive action |
 | `chat.avatar.audioOffsetLabel` | Sync offset field |
-| `chat.avatar.apply` | Apply CTA |
 | `chat.avatar.status.{idle,connecting,live,failed,notConfigured}` | Connection state labels |
-| `chat.avatar.toast.portraitTooLarge` | Size-limit error |
-| `chat.avatar.toast.portraitQuotaExceeded` | localStorage overflow error |
+
+The following keys are **reserved** in all 9 locales for a future
+portrait picker / Apply button restoration. They are not currently
+referenced by any component and can be safely removed if the
+corresponding UI is confirmed out of scope:
+
+- `chat.avatar.uploadPrompt`, `chat.avatar.portraitLabel`,
+  `chat.avatar.removePortrait` — portrait picker UI
+- `chat.avatar.apply` — Apply CTA (replaced by debounced commit)
+- `chat.avatar.toast.portraitTooLarge`,
+  `chat.avatar.toast.portraitQuotaExceeded` — portrait upload errors
 
 Connection state values that depend on `connectionState` are resolved
 inside the component on every render so locale changes propagate without

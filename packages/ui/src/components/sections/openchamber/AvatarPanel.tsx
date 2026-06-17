@@ -21,14 +21,14 @@
  * throwing. Audio playback and chat are never affected.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Icon } from '@/components/icon/Icon';
-import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { getAvatarAudioBridge } from '@/lib/voice/avatarAudioBridge';
 import { useI18n } from '@/lib/i18n';
 import type { IconName } from '@/components/icon/icons';
@@ -61,10 +61,22 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [serverUrlDraft, setServerUrlDraft] = useState(avatarServerUrl);
+  const debouncedServerUrl = useDebouncedValue(serverUrlDraft, 500);
 
+  // Commit the debounced URL to the store. The user types in the draft;
+  // we wait for them to stop typing for 500ms before persisting and
+  // triggering a WebRTC renegotiation + bridge reconnect. Enter commits
+  // immediately (see commitServerUrl). This replaces the older "draft
+  // + Apply button" pattern, which failed on Safari due to click-event
+  // loss across the pointer-events-none/auto wrapper.
   useEffect(() => {
-    setServerUrlDraft(avatarServerUrl);
-  }, [avatarServerUrl]);
+    commitServerUrl(debouncedServerUrl);
+    // avatarServerUrl is read for the comparison but intentionally not
+    // listed: re-running on every store update would re-commit the same
+    // value and create a feedback loop. See openPeer() below for the
+    // same pattern.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedServerUrl]);
 
   // Drive the audio bridge from store state. The bridge itself is a
   // singleton: we just open/close it as configuration changes.
@@ -116,8 +128,21 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [avatarEnabled, avatarServerUrl]);
 
-  const handleApply = (): void => {
-    setAvatarServerUrl(serverUrlDraft.trim());
+  const commitServerUrl = useCallback(
+    (raw: string): void => {
+      const trimmed = raw.trim();
+      if (trimmed !== avatarServerUrl) {
+        setAvatarServerUrl(trimmed);
+      }
+    },
+    [avatarServerUrl, setAvatarServerUrl],
+  );
+
+  const handleServerUrlKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitServerUrl(serverUrlDraft);
+    }
   };
 
   const handleOffsetChange = (next: number): void => {
@@ -225,6 +250,7 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
           type="text"
           value={serverUrlDraft}
           onChange={(e) => setServerUrlDraft(e.target.value)}
+          onKeyDown={handleServerUrlKeyDown}
           placeholder={t('chat.avatar.serverUrlPlaceholder')}
           className="typography-meta"
         />
@@ -244,15 +270,6 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
           className="typography-meta"
         />
       </div>
-
-      <Button
-        type="button"
-        variant="default"
-        size="sm"
-        onClick={handleApply}
-      >
-        {t('chat.avatar.apply')}
-      </Button>
     </div>
   );
 
@@ -285,6 +302,13 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
     peer.ontrack = (event) => {
       const [stream] = event.streams;
       if (videoRef.current && stream) {
+        // Safari quirk: an unstopped audio track on a <video srcObject>
+        // claims the audio output device and silences the AudioContext
+        // TTS path. The actual audio for the user's ears flows through
+        // `useServerTTS` → AudioContext and `avatarAudioBridge` → POST
+        // /humanaudio. The WebRTC audio track exists only for SDP
+        // symmetry, so we stop it as soon as the stream arrives.
+        stream.getAudioTracks().forEach((track) => track.stop());
         videoRef.current.srcObject = stream;
       }
     };

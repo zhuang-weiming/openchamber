@@ -18,10 +18,14 @@ first step is to open browser DevTools → Network and Console tabs.
 
 ### 2.1. AvatarPanel does not render
 
-- Check that `avatarEnabled` is `true` AND `avatarServerUrl` is non-empty.
-- Mobile viewports never render the panel (`!isMobile` in
-  `ChatContainer.tsx:944`). Use a desktop browser or DevTools mobile
-  emulator to desktop mode.
+- The panel is mounted on **non-mobile** viewports only (`!isMobile` in
+  `ChatContainer.tsx:941`). On mobile, the panel is intentionally
+  hidden — see `docs/avatar/setup.md` for the rationale. Use a desktop
+  browser or DevTools mobile-emulator set to a desktop viewport to
+  inspect.
+- The panel is always mounted (not gated on `avatarEnabled` /
+  `avatarServerUrl`) — it shows an "Avatar disabled" placeholder until
+  the user toggles it on and pastes a server URL.
 
 ### 2.2. AvatarPanel renders but shows "Failed" status
 
@@ -30,7 +34,7 @@ non-2xx.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `POST /offer` returns 404 | LiveTalking version uses a different path | Check LiveTalking's actual endpoint; override `buildOfferUrl` in `AvatarPanel.tsx:369` |
+| `POST /offer` returns 404 | LiveTalking version uses a different path | Check LiveTalking's actual endpoint; override `buildOfferUrl` in `AvatarPanel.tsx:341` |
 | `POST /offer` returns 500 | Backend error | Check LiveTalking's stdout/log for the stack trace; usually a missing model weight or CUDA error |
 | `POST /offer` hangs forever | Network unreachable | Verify the URL is reachable from the browser: `curl <url>` |
 | `POST /offer` returns CORS error | LiveTalking CORS not configured | LiveTalking's FastAPI server must allow the OpenChamber origin; check `--cors-allow-origins` or its config |
@@ -41,8 +45,11 @@ non-2xx.
 - Look for ICE failures in the Console. The default STUN is
   `stun:stun.l.google.com:19302`; if Google STUN is blocked (corporate
   networks, China), you may need a TURN server.
-- Check LiveTalking's `addTransceiver` setup. The browser adds
-  `recvonly` video + audio; backend must send both.
+- The browser adds `recvonly` video + audio transceivers; the audio
+  track is **stopped in `ontrack`** (`AvatarPanel.tsx:311`) because
+  Safari would otherwise claim the audio output device and silence the
+  TTS path. LiveTalking must still send the audio track in its answer
+  for SDP symmetry; only the browser-side consumption is dropped.
 
 ## 3. Avatar video plays but is not lipsynced
 
@@ -81,15 +88,17 @@ frame is dropped. The speaker still plays. To recover, fix the
 underlying cause and trigger a new `openPeer()` (toggle avatar off and
 on, or change the server URL).
 
-## 5. Image upload not persisted across page reloads
+## 5. Server URL change does nothing in the panel
 
-- The base64 data URL exceeded the localStorage quota. The setter catches
-  the error (`useConfigStore.ts:2282`) and rolls back the in-memory copy
-  so the store and persistent storage stay in sync.
-- **Fix**: reduce image resolution before upload. A 256×256 JPEG at 80%
-  quality is usually under 50 KB and persists fine.
-- Future: switch from localStorage to IndexedDB for image persistence
-  (out of scope for v1).
+The URL field uses a 500 ms debounced commit. Type the URL, pause for
+half a second, and the WebRTC peer will renegotiate. If you want the
+commit to happen immediately, press **Enter** in the URL field — that
+flushes the debounce without waiting.
+
+If the panel does not respond at all (no debounce fires, Enter does
+nothing, the Enable toggle does nothing either), the panel itself is
+likely broken in the build. Re-check `bun run type-check` / `bun run
+lint` and the browser console for render errors.
 
 ## 6. High CPU usage on mobile or low-power devices
 
@@ -151,9 +160,43 @@ They have changed across versions:
 | 0.8.x | `POST /human` | `WS /human/audio` | binary Int16 LE frames |
 
 This fork uses the 2.x row. If you downgrade to 1.x, override
-`buildOfferUrl` in `AvatarPanel.tsx:374` and `audioPath` in the
+`buildOfferUrl` in `AvatarPanel.tsx:341` and `audioPath` in the
 bridge config, and rewrite `feedAudioChunk` to use `new WebSocket(...)`
 and binary `socket.send(...)` instead of `fetch(POST, formData)`. The
 `packWav` helper can stay (the 1.x audio path also wants valid PCM),
 but you would need to chunk the upload by hand instead of one WAV per
 message.
+
+## 10. Avatar lips don't match the spoken language
+
+LiveTalking is a **lip-sync engine, not a TTS engine**. In the
+OpenChamber integration it never generates audio of its own — the
+avatar receives the audio you upload to `POST /humanaudio` and animates
+the mouth to match. The language of the lips therefore follows the
+language of the audio you feed in:
+
+- If you use Kokoro's English voices (`af_heart`, `bf_lily`, `am_adam`,
+  `bf_emma`, …), the mouth will move to English phonemes.
+- If you use a Chinese Kokoro voice (`zf_xiaobei`, `zm_yunyang`, …),
+  the mouth will move to Chinese phonemes.
+
+LiveTalking's `--tts` CLI flag (e.g. `--tts edgetts`, `--tts cosyvoice`,
+`--tts gpt-sovits`) selects LiveTalking's *internal* TTS for sessions
+that arrive via `POST /human` with `type: 'chat'`. **OpenChamber does
+not use that path** — it always goes through `POST /humanaudio` with
+pre-rendered audio. So `--tts` does not affect what the avatar says in
+the OpenChamber integration.
+
+If the lips look wrong for the language you're speaking, the cause is
+the inference engine, not the language setting:
+
+| Engine | Audio feature (`LiveTalking-2.0.3/avatars/audio_features/`) | Language behaviour |
+|---|---|---|
+| `wav2lip` | `MelASR` (mel-spectrogram only) | Language-agnostic. Best default for English. |
+| `musetalk` | `WhisperASR` (whisper-tiny encoder) | Multilingual but trained mostly on Chinese; English phonemes may not align well. |
+| `ultralight` | `HubertASR` (HuBERT features) | Language-agnostic. |
+
+Switch engines with `--model wav2lip|musetalk|ultralight` on the
+LiveTalking CLI. If you stay on `wav2lip` and the lips still look off,
+the cause is more likely `avatarAudioOffsetMs` than language — see
+section 3.

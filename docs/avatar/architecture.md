@@ -84,20 +84,22 @@ and uploads via `POST /humanaudio`. Lipsync is implicit at the source.
 ### Singleton bridge, not per-message
 
 `getAvatarAudioBridge()` in `packages/ui/src/lib/voice/avatarAudioBridge.ts`
-returns a singleton that owns the configured server URL and the cached
-`imageDataUrl`. There is no long-lived connection — each
-`feedAudioChunk` is a fresh `fetch(POST, formData)`. The
-`disconnect()` + `connect()` cycle happens when the user toggles the
-feature or changes the server URL.
+returns a singleton that owns the configured server URL. There is no
+long-lived connection — each `feedAudioChunk` is a fresh
+`fetch(POST, formData)`. The `disconnect()` + `connect()` cycle happens
+when the user toggles the feature or changes the server URL. The
+`AvatarAudioBridgeConfig.imageDataUrl` field is accepted by the type
+for a future portrait picker but is currently dropped in
+`normalizeConfig` (the field is reserved, not wired).
 
 ## Module ownership
 
 | Module | Owns | Called by |
 |---|---|---|
-| `useConfigStore` | Persisted avatar config (URL, image, enable, offset, sessionid) | `AvatarPanel`, `useServerTTS`, `ChatContainer` |
+| `useConfigStore` | Persisted avatar config (`avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs`, `currentAvatarSessionId`; `avatarImageDataUrl` reserved) | `AvatarPanel`, `useServerTTS`, `ChatContainer` |
 | `useServerTTS` | Fetch MP3 → decode → tee to bridge + speaker | Chat message `Say` handler |
 | `getAvatarAudioBridge` | HTTP multipart upload lifecycle, resample, PCM pack, RIFF/WAVE header | `useServerTTS` (audio upload) |
-| `AvatarPanel` | WebRTC peer, `/offer` handshake (returns sessionid), settings UI | `ChatContainer` (conditional mount) |
+| `AvatarPanel` | WebRTC peer, `/offer` handshake (returns sessionid), settings UI | `ChatContainer` (mount on non-mobile) |
 | `LiveTalking` (external) | Audio → video inference, WebRTC output | — |
 | `Kokoro-FastAPI` (external) | Text → TTS audio (OpenAI-compatible) | OpenChamber's server-side TTS |
 
@@ -108,7 +110,11 @@ feature or changes the server URL.
 3. OpenChamber dev server (auto)
 4. OpenChamber browser UI
    - User configures Custom TTS → Kokoro URL → verify speaker
-   - User configures Digital Human → LiveTalking URL → upload portrait → enable
+   - User enables Digital Human, pastes LiveTalking URL → enable
 5. On each assistant message: user clicks speaker → TTS plays → bridge pushes audio → LiveTalking animates → WebRTC feeds video
 
 WebRTC peer and audio upload connect lazily when `avatarEnabled && avatarServerUrl` is true. No startup dependency on the avatar backend.
+
+The avatar face is determined by LiveTalking's `--avatar_id` startup
+parameter, not by anything the user configures in the OpenChamber
+panel — see `avatar-panel.md` → Avatar identity.

@@ -98,6 +98,16 @@ We do not use it because:
 3. **Failure isolation** — a WebRTC audio track drop would silence
    the entire TTS. The current design has audio independent of the
    avatar pipeline.
+4. **Safari output-device claim** — when a `MediaStream` with an audio
+   track is bound to a `<video srcObject>`, Safari claims the audio
+   output device for that track even when the video element has
+   `muted`. This silences the `AudioContext` TTS path. To work around
+   this without dropping the WebRTC audio channel entirely,
+   `AvatarPanel.ontrack` calls
+   `stream.getAudioTracks().forEach(t => t.stop())` before binding
+   `srcObject`. The track is requested (to keep SDP symmetric with
+   LiveTalking's expectations) and immediately discarded. See
+   `avatar-panel.md` → "Why `audio` transceiver is added but unused".
 
 If LiveTalking adds a low-latency server-driven audio path in a future
 version, we can re-evaluate. For now, the `offsetSeconds` delay is the

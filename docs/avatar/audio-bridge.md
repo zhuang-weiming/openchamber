@@ -31,7 +31,7 @@ exactly one logical uplink per browser tab.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `serverUrl` | `string` | required | Base HTTP URL, e.g. `http://localhost:8765` |
-| `imageDataUrl` | `string?` | `undefined` | Sent once as part of `POST /offer` body (handled by `AvatarPanel`, not the bridge) |
+| `imageDataUrl` | `string?` | `undefined` | **Reserved** — type is accepted but the value is currently dropped in `normalizeConfig`. The AvatarPanel does not yet send an `image` field on `POST /offer` (no portrait picker UI). LiveTalking falls back to its default avatar in that case. |
 | `silent` | `boolean` | `false` | Suppress console logging |
 | `audioPath` | `string` | `/humanaudio` | Override the upload path |
 

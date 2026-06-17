@@ -4,18 +4,20 @@
 
 ## New fields
 
-| Field | Type | Default | Persisted key | Setter |
-|---|---|---|---|---|
-| `avatarServerUrl` | `string` | `''` (empty → disabled) | `avatarServerUrl` | `setAvatarServerUrl(url)` |
-| `avatarImageDataUrl` | `string` | `''` (none) | `avatarImageDataUrl` | `setAvatarImageDataUrl(dataUrl)` |
-| `avatarEnabled` | `boolean` | `false` | `avatarEnabled` | `setAvatarEnabled(enabled)` |
-| `avatarAudioOffsetMs` | `number` | `150` | `avatarAudioOffsetMs` | `setAvatarAudioOffsetMs(ms)` |
-| `currentAvatarSessionId` | `string` | `''` (none) | `currentAvatarSessionId` | `setCurrentAvatarSessionId(id)` |
+| Field | Type | Default | Persisted key | Setter | Status |
+|---|---|---|---|---|---|
+| `avatarServerUrl` | `string` | `''` (empty → disabled) | `avatarServerUrl` | `setAvatarServerUrl(url)` | wired in `AvatarPanel` |
+| `avatarEnabled` | `boolean` | `false` | `avatarEnabled` | `setAvatarEnabled(enabled)` | wired in `AvatarPanel` |
+| `avatarAudioOffsetMs` | `number` | `150` | `avatarAudioOffsetMs` | `setAvatarAudioOffsetMs(ms)` | wired in `AvatarPanel` |
+| `currentAvatarSessionId` | `string` | `''` (none) | `currentAvatarSessionId` | `setCurrentAvatarSessionId(id)` | auto-written on `POST /offer` |
+| `avatarImageDataUrl` | `string` | `''` (none) | `avatarImageDataUrl` | `setAvatarImageDataUrl(dataUrl)` | **reserved** — no UI calls the setter yet |
 
 All five are read from `localStorage` on initialization and written to
 `localStorage` on every setter call. `currentAvatarSessionId` is
 written by `AvatarPanel` on every successful `POST /offer` and cleared
-on `teardownPeer()`; it is not user-editable.
+on `teardownPeer()`; it is not user-editable. The `avatarImageDataUrl`
+setter is implemented with a quota-rollback safety (see below) for the
+day a portrait picker is added.
 
 ## Initialization (lines 913–956)
 
@@ -53,28 +55,15 @@ setAvatarServerUrl: (url) => {
 
 ### localStorage quota concern for image data URLs
 
-`avatarImageDataUrl` can be a very large string (a high-res JPEG at
-base64 can be 2–5 MB). `localStorage` is usually capped at 5–10 MB per
-origin and OpenChamber's `useConfigStore` is shared with many other
-keys, so a large portrait can blow the budget and break unrelated
-settings.
+`avatarImageDataUrl` is reserved for a future portrait picker. When the
+UI lands, a high-res JPEG at base64 can be 2–5 MB, and `localStorage` is
+usually capped at 5–10 MB per origin — the rest of `useConfigStore`
+shares the same budget, so an unchecked portrait could blow the budget
+and break unrelated settings.
 
-Two defenses work together:
+Two defenses are wired in the store today:
 
-**1. Client-side size guard** in `AvatarPanel.tsx` — files larger than
-`PORTRAIT_MAX_BYTES` (512 KB, ~2–4× a typical 256×256 JPEG) are rejected
-before any `FileReader` work runs:
-
-```ts
-if (file.size > PORTRAIT_MAX_BYTES) {
-  toast.error(t('chat.avatar.toast.portraitTooLarge', {
-    maxKb: Math.round(PORTRAIT_MAX_BYTES / 1024),
-  }));
-  return;
-}
-```
-
-**2. Rollback on quota overflow** in the setter (`useConfigStore.ts`):
+**1. Quota-rollback safety in the setter** (`useConfigStore.ts:2278`):
 
 ```ts
 setAvatarImageDataUrl: (dataUrl) => {
@@ -92,29 +81,34 @@ setAvatarImageDataUrl: (dataUrl) => {
 ```
 
 When the quota is exceeded the setter clears the in-memory copy and
-returns the store to its prior state. `AvatarPanel` then surfaces a
-`chat.avatar.toast.portraitQuotaExceeded` toast so the user understands
-why their portrait is gone.
+returns the store to its prior state. This is intentionally stricter
+than the original "keep in memory even if persistence fails" behavior:
+a partially-persisted state (in-memory ≠ localStorage) was confusing
+during refresh — the user would see their portrait working, then lose
+it on a reload with no explanation.
 
-This is intentionally stricter than the original "keep in memory even
-if persistence fails" behavior: a partially-persisted state (in-memory
-≠ localStorage) was confusing during refresh — the user would see their
-portrait working, then lose it on a reload with no explanation.
+**2. The future client-side size guard** will live in `AvatarPanel.tsx`
+— files larger than `PORTRAIT_MAX_BYTES` (512 KB) will be rejected
+before any `FileReader` work runs, surfacing a
+`chat.avatar.toast.portraitTooLarge` toast. The matching
+`chat.avatar.toast.portraitQuotaExceeded` toast will be surfaced by
+the setter above once the picker is wired.
 
 Note that the avatar fields are **not** in the `persist()` partializer
-(`useConfigStore.ts:2609-2630`), so zustand's `persist` middleware does
-not re-serialize the data URL on every state change. Persistence is
-fully delegated to the manual `localStorage` calls above — which is the
-established pattern for all voice fields in this store.
+(`useConfigStore.ts:2628-2649`), so zustand's `persist` middleware does
+not re-serialize the (potentially large) image data URL on every state
+change. Persistence is fully delegated to the manual `localStorage`
+calls above — which is the established pattern for all voice fields in
+this store.
 
 ## Subscribers
 
 | Subscriber | Field(s) consumed | File |
 |---|---|---|
-| `AvatarPanel` | `avatarServerUrl`, `avatarImageDataUrl`, `avatarEnabled`, `avatarAudioOffsetMs`, `setCurrentAvatarSessionId` | `avatar-panel.tsx:50-58` |
+| `AvatarPanel` | `avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs`, `setCurrentAvatarSessionId` | `avatar-panel.tsx:50-56` |
 | `useServerTTS` | `avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs` | `useServerTTS.ts:145-147` |
 | `useServerTTS` (via `getState()`) | `currentAvatarSessionId` | `useServerTTS.ts:313` |
-| `ChatContainer` | `avatarEnabled`, `avatarServerUrl` | `ChatContainer.tsx:555-556` |
+| `ChatContainer` | (mount-only) | `ChatContainer.tsx:941-947` |
 
 Only the fields each component actually needs are selected via Zustand
 leaf selectors — no component subscribes to the entire `ConfigStore`.
