@@ -27,7 +27,6 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { Icon } from '@/components/icon/Icon';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { NumberInput } from '@/components/ui/number-input';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { getAvatarAudioBridge } from '@/lib/voice/avatarAudioBridge';
 import { useI18n } from '@/lib/i18n';
@@ -49,10 +48,10 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
   const { currentTheme } = useThemeSystem();
   const avatarServerUrl = useConfigStore((state) => state.avatarServerUrl);
   const avatarEnabled = useConfigStore((state) => state.avatarEnabled);
-  const avatarAudioOffsetMs = useConfigStore((state) => state.avatarAudioOffsetMs);
+  const avatarMuteSpeaker = useConfigStore((state) => state.avatarMuteSpeaker);
   const setAvatarServerUrl = useConfigStore((state) => state.setAvatarServerUrl);
   const setAvatarEnabled = useConfigStore((state) => state.setAvatarEnabled);
-  const setAvatarAudioOffsetMs = useConfigStore((state) => state.setAvatarAudioOffsetMs);
+  const setAvatarMuteSpeaker = useConfigStore((state) => state.setAvatarMuteSpeaker);
   const setCurrentAvatarSessionId = useConfigStore((state) => state.setCurrentAvatarSessionId);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -143,10 +142,6 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
       event.preventDefault();
       commitServerUrl(serverUrlDraft);
     }
-  };
-
-  const handleOffsetChange = (next: number): void => {
-    setAvatarAudioOffsetMs(Math.max(0, Math.min(2000, next)));
   };
 
   const stateLabel: Record<ConnectionState, string> = {
@@ -256,20 +251,18 @@ export function AvatarPanel({ side = 'right' }: AvatarPanelProps): React.JSX.Ele
         />
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <label className="typography-micro text-[var(--surface-muted-foreground)]">
-          {t('chat.avatar.audioOffsetLabel')}
+      {avatarEnabled && avatarServerUrl ? (
+        <label className="flex cursor-pointer items-center gap-2">
+          <Checkbox
+            checked={avatarMuteSpeaker}
+            onChange={setAvatarMuteSpeaker}
+            ariaLabel={t('chat.avatar.muteSpeakerLabel')}
+          />
+          <span className="typography-meta text-[var(--surface-muted-foreground)]">
+            {t('chat.avatar.muteSpeakerLabel')}
+          </span>
         </label>
-        <NumberInput
-          value={avatarAudioOffsetMs}
-          onValueChange={handleOffsetChange}
-          min={0}
-          max={2000}
-          step={10}
-          fallbackValue={150}
-          className="typography-meta"
-        />
-      </div>
+      ) : null}
     </div>
   );
 

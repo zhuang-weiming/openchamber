@@ -8,7 +8,7 @@
 |---|---|---|---|---|---|
 | `avatarServerUrl` | `string` | `''` (empty → disabled) | `avatarServerUrl` | `setAvatarServerUrl(url)` | wired in `AvatarPanel` |
 | `avatarEnabled` | `boolean` | `false` | `avatarEnabled` | `setAvatarEnabled(enabled)` | wired in `AvatarPanel` |
-| `avatarAudioOffsetMs` | `number` | `150` | `avatarAudioOffsetMs` | `setAvatarAudioOffsetMs(ms)` | wired in `AvatarPanel` |
+| `avatarMuteSpeaker` | `boolean` | `false` | `avatarMuteSpeaker` | `setAvatarMuteSpeaker(enabled)` | wired in `AvatarPanel`; gated on `avatarEnabled && avatarServerUrl` |
 | `currentAvatarSessionId` | `string` | `''` (none) | `currentAvatarSessionId` | `setCurrentAvatarSessionId(id)` | auto-written on `POST /offer` |
 | `avatarImageDataUrl` | `string` | `''` (none) | `avatarImageDataUrl` | `setAvatarImageDataUrl(dataUrl)` | **reserved** — no UI calls the setter yet |
 
@@ -36,9 +36,10 @@ The `typeof window !== 'undefined` guard is required because Zustand's
 `localStorage`. On the client the guard passes and the last saved URL is
 restored.
 
-Same pattern for all four fields. `avatarAudioOffsetMs` also validates the
-parsed number is within `[0, 2000]` before accepting it; otherwise the
-default `150` sticks.
+Same pattern for all four fields. `avatarMuteSpeaker` is a plain
+boolean — `'true'` / `'false'` strings are matched against
+`localStorage.getItem('avatarMuteSpeaker')`, anything else falls back
+to `false`.
 
 ## Setters
 
@@ -105,8 +106,8 @@ this store.
 
 | Subscriber | Field(s) consumed | File |
 |---|---|---|
-| `AvatarPanel` | `avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs`, `setCurrentAvatarSessionId` | `avatar-panel.tsx:50-56` |
-| `useServerTTS` | `avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs` | `useServerTTS.ts:145-147` |
+| `AvatarPanel` | `avatarServerUrl`, `avatarEnabled`, `avatarMuteSpeaker`, `setCurrentAvatarSessionId` | `avatar-panel.tsx:50-56` |
+| `useServerTTS` | `avatarServerUrl`, `avatarEnabled`, `avatarMuteSpeaker` | `useServerTTS.ts:145-147` |
 | `useServerTTS` (via `getState()`) | `currentAvatarSessionId` | `useServerTTS.ts:313` |
 | `ChatContainer` | (mount-only) | `ChatContainer.tsx:941-947` |
 

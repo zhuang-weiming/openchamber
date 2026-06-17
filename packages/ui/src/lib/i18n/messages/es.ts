@@ -2613,7 +2613,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.avatar.serverUrlPlaceholder": "http://localhost:8765",
   "chat.avatar.portraitLabel": "Retrato (imagen)",
   "chat.avatar.removePortrait": "Quitar retrato",
-  "chat.avatar.audioOffsetLabel": "Desplazamiento de audio (ms): retardo de sincronización con el avatar",
+  "chat.avatar.muteSpeakerLabel": "Silenciar el altavoz local (usar solo el audio del avatar)",
   "chat.avatar.apply": "Aplicar",
   "chat.avatar.status.idle": "Inactivo",
   "chat.avatar.status.connecting": "Conectando…",

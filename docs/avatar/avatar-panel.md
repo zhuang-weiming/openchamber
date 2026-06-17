@@ -3,7 +3,7 @@
 The AvatarPanel is a floating settings + video panel anchored in the
 top-right corner of the chat surface. It runs the WebRTC peer lifecycle,
 displays the avatar's face, and lets the user configure the server URL
-and audio sync offset.
+and the "mute local speaker" toggle for avatar-mode audio routing.
 
 **File**: `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx`
 
@@ -49,8 +49,7 @@ In `packages/ui/src/components/chat/ChatContainer.tsx:941`:
 │ LiveTalking server URL              │
 │ [http://localhost:8765           ]  │  ← debounced commit (no Apply)
 ├──────────────────────────────────────┤
-│ Audio offset (ms) — sync delay      │
-│ [150                              ] │
+│ [✓] Mute local speaker              │  ← only when avatar enabled + URL set
 └──────────────────────────────────────┘
 ```
 
@@ -134,16 +133,17 @@ conflict, so the explicit stop is a Safari-targeted no-op there.
 |---|---|---|---|
 | Enable checkbox | shared `<Checkbox>` | `avatarEnabled` / `setAvatarEnabled` | Persisted to localStorage |
 | Server URL input | shared `<Input>` | `avatarServerUrl` / local draft state | Draft is debounced 500ms then committed; Enter commits immediately |
-| Audio offset | shared `<NumberInput>` | `avatarAudioOffsetMs` | Min 0, max 2000, step 10; commits on change |
+| Mute local speaker | shared `<Checkbox>` | `avatarMuteSpeaker` / `setAvatarMuteSpeaker` | Only rendered when `avatarEnabled && avatarServerUrl` is truthy; persists to localStorage. When on, `useServerTTS` clamps the local `GainNode` to `0` so the user hears only LiveTalking's WebRTC audio (via the PiP / MiniChat window), which is intrinsically in sync with the mouth frames it renders. |
 
 The bridge also consumes `currentAvatarSessionId` from the store, but
 that field is **not** user-editable — it is written automatically by
 `openPeer()` step 8 and cleared by `teardownPeer()`. See
 `audio-bridge.md` for the multipart upload protocol.
 
-The Audio offset commits directly to the store on every change — the
-value is read on the next `speak()` call, and applying it mid-utterance
-would cause a one-off glitch that is worse than a slightly stale value.
+The Mute local speaker toggle commits directly to the store on every
+change. The hook reads the value at `speak()` time so flipping it
+mid-utterance simply affects the *next* `speak()` call — a one-off
+glitch is worse than a slightly stale value.
 
 Server URL uses a debounced-commit pattern (`useDebouncedValue` with
 500 ms delay) instead of an explicit Apply button. The debounce
@@ -167,14 +167,13 @@ LiveTalking falls back to its default avatar in that case.
 
 ### Shared UI primitives
 
-This component uses three of the shared form primitives (`Input`,
-`NumberInput`, `Checkbox`). Where the previous version used raw HTML
-elements with hand-rolled Tailwind classes, the current version
-defers to `packages/ui/src/components/ui/*` so:
+This component uses two of the shared form primitives (`Input`,
+`Checkbox`). Where the previous version used raw HTML elements with
+hand-rolled Tailwind classes, the current version defers to
+`packages/ui/src/components/ui/*` so:
 
 - `Input` provides focus rings, hover transitions, and error states for
   free.
-- `NumberInput` provides mobile +/- buttons and step normalization.
 - `Checkbox` provides `ariaLabel`, indeterminate state, and Base UI's
   built-in keyboard handling.
 
@@ -191,7 +190,7 @@ across all 9 supported locales (en, zh-CN, zh-TW, es, fr, ko, pl, pt-BR, uk).
 | `chat.avatar.disabledPlaceholder` | Empty-state hint when toggled off |
 | `chat.avatar.connectionFailed` | Fallback message when WebRTC fails |
 | `chat.avatar.serverUrlLabel` / `.serverUrlPlaceholder` | URL field |
-| `chat.avatar.audioOffsetLabel` | Sync offset field |
+| `chat.avatar.muteSpeakerLabel` | "Mute local speaker" toggle label and aria-label |
 | `chat.avatar.status.{idle,connecting,live,failed,notConfigured}` | Connection state labels |
 
 The following keys are **reserved** in all 9 locales for a future

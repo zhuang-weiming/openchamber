@@ -2612,7 +2612,7 @@ export const dict = {
   'chat.avatar.serverUrlPlaceholder': 'http://localhost:8765',
   'chat.avatar.portraitLabel': 'Portrait (image)',
   'chat.avatar.removePortrait': 'Remove portrait',
-  'chat.avatar.audioOffsetLabel': 'Audio offset (ms) — sync delay to match avatar processing',
+  'chat.avatar.muteSpeakerLabel': 'Mute OpenChamber speaker (use avatar audio only)',
   'chat.avatar.apply': 'Apply',
   'chat.avatar.status.idle': 'Idle',
   'chat.avatar.status.connecting': 'Connecting…',

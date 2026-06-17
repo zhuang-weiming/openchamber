@@ -2612,7 +2612,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.avatar.serverUrlPlaceholder': 'http://localhost:8765',
   'chat.avatar.portraitLabel': '人像圖片',
   'chat.avatar.removePortrait': '移除人像',
-  'chat.avatar.audioOffsetLabel': '音訊延遲（毫秒）—— 與數位人處理同步',
+  'chat.avatar.muteSpeakerLabel': '靜音本機朗讀（僅使用數位人音訊）',
   'chat.avatar.apply': '套用',
   'chat.avatar.status.idle': '閒置',
   'chat.avatar.status.connecting': '連線中…',

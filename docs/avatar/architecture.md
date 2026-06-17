@@ -96,7 +96,7 @@ for a future portrait picker but is currently dropped in
 
 | Module | Owns | Called by |
 |---|---|---|
-| `useConfigStore` | Persisted avatar config (`avatarServerUrl`, `avatarEnabled`, `avatarAudioOffsetMs`, `currentAvatarSessionId`; `avatarImageDataUrl` reserved) | `AvatarPanel`, `useServerTTS`, `ChatContainer` |
+| `useConfigStore` | Persisted avatar config (`avatarServerUrl`, `avatarEnabled`, `avatarMuteSpeaker`, `currentAvatarSessionId`; `avatarImageDataUrl` reserved) | `AvatarPanel`, `useServerTTS`, `ChatContainer` |
 | `useServerTTS` | Fetch MP3 → decode → tee to bridge + speaker | Chat message `Say` handler |
 | `getAvatarAudioBridge` | HTTP multipart upload lifecycle, resample, PCM pack, RIFF/WAVE header | `useServerTTS` (audio upload) |
 | `AvatarPanel` | WebRTC peer, `/offer` handshake (returns sessionid), settings UI | `ChatContainer` (mount on non-mobile) |

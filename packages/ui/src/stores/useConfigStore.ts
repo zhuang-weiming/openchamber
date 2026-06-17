@@ -676,7 +676,7 @@ interface ConfigStore {
     avatarServerUrl: string;
     avatarImageDataUrl: string;
     avatarEnabled: boolean;
-    avatarAudioOffsetMs: number;
+    avatarMuteSpeaker: boolean;
     currentAvatarSessionId: string;
     // STT (speech-to-text) settings
     sttProvider: 'browser' | 'server' | 'wasm';
@@ -710,7 +710,7 @@ interface ConfigStore {
     setAvatarServerUrl: (url: string) => void;
     setAvatarImageDataUrl: (dataUrl: string) => void;
     setAvatarEnabled: (enabled: boolean) => void;
-    setAvatarAudioOffsetMs: (ms: number) => void;
+    setAvatarMuteSpeaker: (enabled: boolean) => void;
     setCurrentAvatarSessionId: (id: string) => void;
     setSttProvider: (provider: 'browser' | 'server' | 'wasm') => void;
     setSttServerUrl: (url: string) => void;
@@ -932,15 +932,13 @@ export const useConfigStore = create<ConfigStore>()(
                     }
                     return false;
                 })(),
-                avatarAudioOffsetMs: (() => {
+                avatarMuteSpeaker: (() => {
                     if (typeof window !== 'undefined') {
-                        const saved = localStorage.getItem('avatarAudioOffsetMs');
-                        if (saved) {
-                            const parsed = parseFloat(saved);
-                            if (!isNaN(parsed) && parsed >= 0 && parsed <= 2000) return parsed;
-                        }
+                        const saved = localStorage.getItem('avatarMuteSpeaker');
+                        if (saved === 'true') return true;
+                        if (saved === 'false') return false;
                     }
-                    return 150;
+                    return false;
                 })(),
                 currentAvatarSessionId: (() => {
                     if (typeof window !== 'undefined') {
@@ -2296,10 +2294,10 @@ export const useConfigStore = create<ConfigStore>()(
                     }
                 },
 
-                setAvatarAudioOffsetMs: (ms: number) => {
-                    set({ avatarAudioOffsetMs: ms });
+                setAvatarMuteSpeaker: (enabled: boolean) => {
+                    set({ avatarMuteSpeaker: enabled });
                     if (typeof window !== 'undefined') {
-                        localStorage.setItem('avatarAudioOffsetMs', String(ms));
+                        localStorage.setItem('avatarMuteSpeaker', enabled ? 'true' : 'false');
                     }
                 },
 

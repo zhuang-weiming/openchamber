@@ -2,92 +2,75 @@
 
 The Digital Human feature has **two parallel output paths** to the user:
 
-1. **Voice** — TTS audio through `AudioContext` (zero pipeline delay)
-2. **Face** — WebRTC video of a MuseTalk-rendered mouth (80–300 ms pipeline delay)
+1. **Voice** — LiveTalking's WebRTC audio track (rendered through the
+   browser's picture-in-picture window or the Electron MiniChat).
+2. **Face** — LiveTalking's WebRTC video track of the MuseTalk / wav2lip
+   rendered mouth.
 
-If both pipelines start at the same time, the user sees a face that opens
-its mouth 100–300 ms **after** the voice starts. We compensate by
-delaying the audio to match the video.
+Both come from the **same backend pipeline**, so the voice and mouth
+animation are intrinsically in lockstep — no offset tuning is needed.
+
+OpenChamber's `AudioContext` TTS path also exists, but in avatar mode
+its local `GainNode` is clamped to `0` (see "Avatar-mode mute" below).
+That keeps OpenChamber's voice from competing with LiveTalking's voice.
 
 ## Where the latency comes from
 
 ```
-                  ┌──── MuseTalk inference (~120 ms typical, GPU)
-                  │
-POST /humanaudio →│  ┌── ASR queue + WebRTC server-side buffering (~30 ms)
-                  │  │
-                  ▼  ▼
+                   ┌──── MuseTalk / wav2lip inference (~120 ms typical, GPU)
+                   │
+POST /humanaudio → │  ┌── ASR queue + WebRTC server-side buffering (~30 ms)
+                   │  │
+                   ▼  ▼
 browser frame ready at t = ~300 ms after `feedAudioChunk`
 ```
 
-The mouth is rendered for an audio frame that has not yet been heard.
-The user sees the mouth animate "in the future" relative to the audio.
+Even though LiveTalking takes ~300 ms to render the first mouth frame,
+the user perceives perfect sync because the **audio** they hear is also
+LiveTalking's — produced from the same audio frames that drive the
+mouth animation.
 
-If the speaker starts at `t = 0` and the first WebRTC frame is ready
-at `t = 150 ms`, the user perceives a 150 ms "delay before the mouth
-moves" while the audio is already in their ears.
+## Avatar-mode mute (the new design)
 
-## How the offset fixes it
+When the user enables **Mute local speaker** in the AvatarPanel
+(`avatarMuteSpeaker = true`), `useServerTTS` sets the local `GainNode`
+to `0`:
 
 ```
-       t = 0       t = 150 ms         t = 200 ms
-        │             │                  │
-audio:  │  silenced  │──────────────▶  starts playing
-        │             │                  │
-video:  │  first WebRTC frame arrives   │  continues rendering
-        │             │                  │
-user:   │  sees mouth move as sound      │  starts
-        │  begins — perceived sync.      │
+AudioBuffer
+  ├── ctx.createBufferSource() → GainNode (gain = 0) → destination    (silent)
+  └── bridge.feedAudioChunk()                                          (POST /humanaudio)
 ```
 
-By scheduling the speaker start at `ctx.currentTime + avatarAudioOffsetMs`,
-the audio is **delayed** until the avatar backend has had time to produce
-its first frame. The same `AudioBuffer` reaches both paths, so once the
-audio starts playing the mouth animation is in lockstep with it.
+The TTS audio still flows to LiveTalking (the bridge upload is
+unaffected) so the mouth animation runs as before. The user simply does
+not hear OpenChamber's voice — they hear LiveTalking's WebRTC audio
+instead, which is intrinsically in sync.
 
-This is the standard trick used in karaoke and AV sync — small audio
-delays are imperceptible to humans, but video-audio desync is jarring.
+### Why this replaced the old `avatarAudioOffsetMs` knob
 
-## Why 150 ms default
+The previous design ran OpenChamber's `AudioContext` TTS at full
+volume *and* delivered LiveTalking's WebRTC audio through the avatar
+`<video>` element. With two audio sources present, every additional
+millisecond of latency in the WebRTC video pipeline manifested as
+phase drift between the two voices. Static offsets could not track a
+non-constant pipeline (MuseTalk inference + multipart upload +
+WebRTC buffering + browser decode each vary), so the offset knob was
+a best-effort heuristic at best.
 
-| Component | Latency | Notes |
-|---|---|---|
-| MuseTalk inference (first frame) | 80–200 ms | GPU ≈ 80, CPU ≈ 200 |
-| `POST /humanaudio` upload + ASR queue | 100–300 ms | `fetch` body upload + LiveTalking's `put_audio_file` → `soundfile.read` → 20ms chunk queue |
-| WebRTC ICE / SDP / buffering | 20–50 ms | LAN to localhost is low |
-| Browser video decode | ~10 ms | Negligible |
-| **Total** | **~300–500 ms** | Recommended starting offset |
+Routing the user to a single audio source (LiveTalking's WebRTC track)
+removes the phase problem. The local `GainNode` value no longer
+affects what the user hears, so timing becomes irrelevant.
 
-## Tuning `avatarAudioOffsetMs`
+## Why we do NOT use WebRTC audio track for sync (legacy rationale)
 
-The value is editable in the AvatarPanel (`0–2000` ms, step 10). Common
-adjustments:
+> **Historical note**: in the previous design, OpenChamber stopped the
+> WebRTC audio track in `AvatarPanel.ontrack` and played the speaker
+> path instead. The new avatar-mode mute design **does not** stop the
+> track — the WebRTC audio is the only audible path when the mute is
+> on, and the AudioContext TTS is gated to silence.
 
-| Symptom | Adjustment |
-|---|---|
-| Mouth moves before voice (lead) | Reduce offset by 20–50 ms |
-| Mouth trails voice (lag) | Increase offset by 20–50 ms |
-| First word is muted (offset too large) | Reduce offset until first word is audible |
-| Avatar face stutters at the start of each message | Increase offset to give the backend more warmup time |
-
-A good starting point: record a 5-second message, listen, observe the
-mouth, adjust by 10 ms increments until they align.
-
-> Note: when the audio bridge is in HTTP multipart mode (the default
-> for LiveTalking 2.x), the `fetch` upload + server-side
-> `soundfile.read` decode adds an extra 100–300 ms of latency compared
-> to a hypothetical WebSocket stream. The recommended starting
-> `avatarAudioOffsetMs` is **300 ms**, not 150 ms. Tune from there
-> using the table above.
-
-## Why we do NOT use WebRTC audio track for sync
-
-An alternative architecture is to send audio through the WebRTC media
-stream (a bidirectional audio channel) and let the avatar backend mux
-mouth animation directly with the audio the user hears. This avoids the
-need for an offset and gives sub-frame sync.
-
-We do not use it because:
+The legacy rationale for stopping the WebRTC audio:
 
 1. **Mobile Safari autoplay** — WebRTC audio tracks are subject to
    stricter autoplay rules than `AudioContext`. The existing TTS path
@@ -96,21 +79,21 @@ We do not use it because:
    avatar cannot handle (e.g. very long outputs that exceed LiveTalking's
    session time). Keeping audio out of WebRTC preserves that path.
 3. **Failure isolation** — a WebRTC audio track drop would silence
-   the entire TTS. The current design has audio independent of the
+   the entire TTS. The previous design had audio independent of the
    avatar pipeline.
 4. **Safari output-device claim** — when a `MediaStream` with an audio
    track is bound to a `<video srcObject>`, Safari claims the audio
    output device for that track even when the video element has
-   `muted`. This silences the `AudioContext` TTS path. To work around
+   `muted`. This silenced the `AudioContext` TTS path. To work around
    this without dropping the WebRTC audio channel entirely,
-   `AvatarPanel.ontrack` calls
+   `AvatarPanel.ontrack` previously called
    `stream.getAudioTracks().forEach(t => t.stop())` before binding
-   `srcObject`. The track is requested (to keep SDP symmetric with
-   LiveTalking's expectations) and immediately discarded. See
-   `avatar-panel.md` → "Why `audio` transceiver is added but unused".
+   `srcObject`. With the new mute design, this Safari claim becomes a
+   feature — it naturally silences `AudioContext` on Safari when the
+   avatar is active.
 
 If LiveTalking adds a low-latency server-driven audio path in a future
-version, we can re-evaluate. For now, the `offsetSeconds` delay is the
+version, we can re-evaluate. For now, the avatar-mode mute is the
 simplest correct solution.
 
 ## Future: AudioWorklet-based streaming

@@ -144,7 +144,7 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
   const openaiCompatibleApiKey = useConfigStore((state) => state.openaiCompatibleApiKey);
   const avatarServerUrl = useConfigStore((state) => state.avatarServerUrl);
   const avatarEnabled = useConfigStore((state) => state.avatarEnabled);
-  const avatarAudioOffsetMs = useConfigStore((state) => state.avatarAudioOffsetMs);
+  const avatarMuteSpeaker = useConfigStore((state) => state.avatarMuteSpeaker);
 
   // Check if server TTS is available
   const checkAvailability = useCallback(async (): Promise<boolean> => {
@@ -324,8 +324,14 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
         source.detune.value = (pitch - 1.0) * 1200;
       }
 
-      // Apply volume via GainNode
-      const volume = options?.volume ?? 1.0;
+      // Apply volume via GainNode. When avatar mode is active and the user has
+      // asked to mute the local speaker, force gain to 0 — the bridge still
+      // receives the decoded AudioBuffer above (so LiveTalking can drive the
+      // mouth animation), but the user hears only LiveTalking's WebRTC audio
+      // (via the PiP / MiniChat window), which is intrinsically in sync.
+      const speakerMuted =
+        avatarMuteSpeaker && avatarEnabled && Boolean(avatarServerUrl);
+      const volume = speakerMuted ? 0 : (options?.volume ?? 1.0);
       const gainNode = ctx.createGain();
       gainNode.gain.value = volume;
 
@@ -341,21 +347,13 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
         options?.onEnd?.();
       };
 
-      // Start playback. We honor `avatarAudioOffsetMs` by scheduling the
-      // speaker start a few hundred milliseconds into the future so the
-      // mouth animation (which carries its own per-frame inference latency
-      // inside the avatar backend) catches up before sound is heard.
+      // Start playback. Timing is irrelevant when the speaker is muted for
+      // avatar mode — LiveTalking's WebRTC audio is the only audible path and
+      // is intrinsically in sync with the mouth frames it renders.
       console.log('[useServerTTS] Starting audio playback via Web Audio API...');
       setIsPlaying(true);
       options?.onStart?.();
-      const offsetSeconds = avatarEnabled && avatarServerUrl
-        ? Math.max(0, avatarAudioOffsetMs) / 1000
-        : 0;
-      if (offsetSeconds > 0) {
-        source.start(ctx.currentTime + offsetSeconds);
-      } else {
-        source.start(0);
-      }
+      source.start(0);
       
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
@@ -369,7 +367,7 @@ export function useServerTTS(options: UseServerTTSOptions = {}): UseServerTTSRet
       options?.onError?.(errorMsg);
       setIsPlaying(false);
     }
-  }, [stop, currentProviderId, currentModelId, openaiApiKey, openaiCompatibleApiKey, avatarEnabled, avatarServerUrl, avatarAudioOffsetMs]);
+  }, [stop, currentProviderId, currentModelId, openaiApiKey, openaiCompatibleApiKey, avatarEnabled, avatarServerUrl, avatarMuteSpeaker]);
 
   // Cleanup on unmount
   useEffect(() => {

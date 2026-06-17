@@ -16,11 +16,11 @@ update the TTS hook"). It adds zero new server routes; all changes live in
 |---|---|
 | [`architecture.md`](./architecture.md) | System diagram, data flow, design decisions, why-this-stack |
 | [`setup.md`](./setup.md) | Install Kokoro-FastAPI and LiveTalking locally; verify endpoints |
-| [`config-store.md`](./config-store.md) | New avatar fields in `useConfigStore` (URL, enable, offset; image reserved) |
-| [`tts-hook.md`](./tts-hook.md) | `useServerTTS` tee point and `start(when)` audio offset |
+| [`config-store.md`](./config-store.md) | New avatar fields in `useConfigStore` (URL, enable, mute-speaker; image reserved) |
+| [`tts-hook.md`](./tts-hook.md) | `useServerTTS` tee point and the avatar-mode speaker mute |
 | [`audio-bridge.md`](./audio-bridge.md) | `avatarAudioBridge.ts` — HTTP multipart PCM upload reference |
 | [`avatar-panel.md`](./avatar-panel.md) | `AvatarPanel.tsx` — WebRTC peer + settings UI reference |
-| [`lipsync.md`](./lipsync.md) | Audio/video sync theory, how `avatarAudioOffsetMs` works |
+| [`lipsync.md`](./lipsync.md) | Audio/video sync theory; why OpenChamber's local speaker is muted in avatar mode |
 | [`troubleshooting.md`](./troubleshooting.md) | Common failure modes and how to diagnose them |
 
 ## TL;DR — get a talking avatar in 3 commands
@@ -50,8 +50,8 @@ panel shows a moving face, the integration is working end-to-end.
 | File | Change |
 |---|---|
 | `packages/ui/src/lib/voice/avatarAudioBridge.ts` | **NEW** — HTTP multipart PCM upload (resample, mono mix, Int16 LE, RIFF/WAVE header) |
-| `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx` | **NEW** — WebRTC peer + floating settings panel (uses shared `Input` / `NumberInput` / `Checkbox`) |
-| `packages/ui/src/hooks/useServerTTS.ts` | MODIFIED — tee the decoded `AudioBuffer` to the bridge; honor `avatarAudioOffsetMs` on `start(when)` |
+| `packages/ui/src/components/sections/openchamber/AvatarPanel.tsx` | **NEW** — WebRTC peer + floating settings panel (uses shared `Input` / `Checkbox`) |
+| `packages/ui/src/hooks/useServerTTS.ts` | MODIFIED — tee the decoded `AudioBuffer` to the bridge; gate the local `GainNode` to 0 when `avatarMuteSpeaker` is on |
 | `packages/ui/src/stores/useConfigStore.ts` | MODIFIED — five new persisted avatar fields (image field reserved, no UI yet) |
 | `packages/ui/src/lib/i18n/messages/*.ts` | MODIFIED — added `chat.avatar.*` keys in 9 locales |
 | `packages/ui/src/components/chat/ChatContainer.tsx` | MODIFIED — mount `AvatarPanel` top-right on non-mobile viewports |
@@ -63,8 +63,11 @@ bridge sees the same `AudioBuffer` the speaker would have played.
 ## Non-goals
 
 - The Digital Human feature does **not** replace the audio path. TTS still
-  plays through the regular `AudioContext` so existing iOS / Electron /
-  VS Code WebView autoplay behavior is preserved.
+  flows through the regular `AudioContext` so existing iOS / Electron /
+  VS Code WebView autoplay behavior is preserved. When avatar mode is
+  active and `avatarMuteSpeaker` is on, the local `GainNode` is forced to
+  `0` — the user hears only LiveTalking's WebRTC audio, which is
+  intrinsically locked to the mouth frames it renders.
 - The avatar backend is treated as a **single-user, single-avatar** service.
   Multi-tenant or multi-avatar routing is out of scope.
 - The current implementation mirrors the **full decoded AudioBuffer** per
@@ -79,7 +82,7 @@ non-negotiable conventions:
 - **Theme tokens only** — every color references `currentTheme.colors.*`
   or theme CSS variables (`--surface-*`, `--interactive-*`, `--status-*`).
   No hardcoded hex or Tailwind color utilities.
-- **Shared UI primitives** — `Checkbox`, `Input`, `NumberInput`
+- **Shared UI primitives** — `Checkbox`, `Input`
   come from `packages/ui/src/components/ui/`. No raw `<button>` or
   `<input type="checkbox">`.
 - **Icon sprite** — every icon goes through the shared `<Icon>`

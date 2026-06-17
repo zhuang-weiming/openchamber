@@ -51,25 +51,49 @@ non-2xx.
   TTS path. LiveTalking must still send the audio track in its answer
   for SDP symmetry; only the browser-side consumption is dropped.
 
-## 3. Avatar video plays but is not lipsynced
+## 3. Two voices overlap / audio is out of sync with lips
 
-### 3.1. Mouth moves before voice (video leads audio)
+The previous `avatarAudioOffsetMs` knob is **removed**. With avatar
+mode active the recommended workflow is:
 
-- Reduce `avatarAudioOffsetMs` by 20–50 ms. Try 100, 80, 60…
-- Do not reduce below 50 ms — the first WebRTC frame still needs time to
-  arrive.
+1. Enable **Mute local speaker** in the AvatarPanel (`avatarMuteSpeaker`).
+   OpenChamber's `AudioContext` TTS is clamped to `0`; the bridge still
+   uploads audio to LiveTalking so the mouth animates.
+2. Open the avatar's video in your browser's picture-in-picture window
+   (Edge / Chrome right-click → "Picture in Picture"), or use the
+   Electron MiniChat. Unmute the PiP speaker button — that audio comes
+   from LiveTalking's WebRTC track and is intrinsically in sync with
+   the mouth frames.
 
-### 3.2. Mouth moves after voice (video lags audio)
+### 3.1. Mouth and voice still don't align with mute on
 
-- Increase `avatarAudioOffsetMs` by 20–50 ms. Try 200, 250, 300…
-- If you need more than 500 ms, the avatar backend is overloaded or
-  using CPU-only inference. Check LiveTalking's GPU utilization.
+This means LiveTalking's WebRTC audio is itself out of sync with its
+own video. Causes:
 
-### 3.3. First word of each message is muted
+- LiveTalking is using CPU inference. Switch to a GPU or reduce the
+  model size.
+- The `POST /humanaudio` upload is slow. Check `lastError` on the
+  bridge state.
+- The network between browser and LiveTalking has high jitter. The
+  offset knob that previously helped here is gone; the cleanest fix is
+  to run LiveTalking on the same machine as the browser.
 
-- `avatarAudioOffsetMs` is too large. The first 100–200 ms of audio
-  is being scheduled in the future, but the message starts silent.
-- Reduce until the first word is audible.
+### 3.2. PiP / MiniChat shows no audio
+
+- Edge / Chrome: the PiP speaker button is muted by default. Click it
+  to enable audio. If still silent, verify the avatar's WebRTC
+  connection is `connected` in the AvatarPanel status row.
+- Electron MiniChat: the MiniChat window's avatar inherits the same
+  `<video muted>` element as the main chat. The PiP-style speaker
+  control lives in the browser-native PiP affordance, not the MiniChat
+  window itself.
+
+### 3.3. First word of each message is muted (legacy symptom)
+
+This used to be caused by an over-large `avatarAudioOffsetMs`. The
+offset knob no longer exists, so this symptom now points to the bridge
+upload timing out before LiveTalking's audio pipeline is primed.
+Check `[avatar-bridge] upload failed:` in the Console.
 
 ## 4. Uploads fail with "session not found"
 
@@ -198,5 +222,7 @@ the inference engine, not the language setting:
 
 Switch engines with `--model wav2lip|musetalk|ultralight` on the
 LiveTalking CLI. If you stay on `wav2lip` and the lips still look off,
-the cause is more likely `avatarAudioOffsetMs` than language — see
-section 3.
+the cause is more likely the avatar pipeline's inference latency than
+language. With `avatarMuteSpeaker` on, the audio you hear is produced
+by LiveTalking itself, so any mismatch between mouth and voice points
+at LiveTalking rather than OpenChamber.

@@ -2613,7 +2613,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.avatar.serverUrlPlaceholder": "http://localhost:8765",
   "chat.avatar.portraitLabel": "Портрет (зображення)",
   "chat.avatar.removePortrait": "Видалити портрет",
-  "chat.avatar.audioOffsetLabel": "Зсув аудіо (мс) — затримка синхронізації з аватаром",
+  "chat.avatar.muteSpeakerLabel": "Вимкнути локальний динамік (використовувати лише аудіо аватара)",
   "chat.avatar.apply": "Застосувати",
   "chat.avatar.status.idle": "Простій",
   "chat.avatar.status.connecting": "З'єднання…",

@@ -1,4 +1,4 @@
-# TTS Hook — Tee point and audio offset
+# TTS Hook — Tee point and avatar-mode speaker mute
 
 **File**: `packages/ui/src/hooks/useServerTTS.ts`
 
@@ -21,7 +21,7 @@ form of the TTS audio. It is consumed by **two paths in parallel**:
 
 ```
 AudioBuffer
-  ├── ctx.createBufferSource() → GainNode → destination    (speaker)
+  ├── ctx.createBufferSource() → GainNode → destination    (speaker, gated)
   └── bridge.feedAudioChunk()                               (POST /humanaudio)
 ```
 
@@ -39,60 +39,57 @@ the next `openPeer()` completing.
 | `source.start()` after | Too late — the AudioContext would already have queued the buffer for playback and we'd have already lost the sync reference |
 | Inside `onended` | Does not help — the audio is over |
 
-## Audio offset for lipsync (lines 354–361)
+## Avatar-mode speaker mute (lines 327–336)
 
 ```ts
-const offsetSeconds = avatarEnabled && avatarServerUrl
-  ? Math.max(0, avatarAudioOffsetMs) / 1000
-  : 0;
-if (offsetSeconds > 0) {
-  source.start(ctx.currentTime + offsetSeconds);
-} else {
-  source.start(0);
-}
+const speakerMuted =
+  avatarMuteSpeaker && avatarEnabled && Boolean(avatarServerUrl);
+const volume = speakerMuted ? 0 : (options?.volume ?? 1.0);
+const gainNode = ctx.createGain();
+gainNode.gain.value = volume;
 ```
 
-`AvatarPanel.handleOffsetChange` clamps the value to `[0, 2000]` before
-storing, so the `Math.max(0, …)` here is defense-in-depth — by the time
-`avatarAudioOffsetMs` reaches this hook it is always non-negative.
+When the user has checked **Mute local speaker** in the AvatarPanel,
+the `GainNode` is clamped to `0`. The decoded `AudioBuffer` is still
+pushed to the bridge above so LiveTalking can drive the mouth animation;
+the user simply hears nothing from OpenChamber's `AudioContext` path.
 
-### Why a delay is needed
+The remaining audio source is LiveTalking's WebRTC track (rendered
+through the browser's picture-in-picture window or the Electron
+MiniChat). That audio is **intrinsically in sync with the mouth frames
+LiveTalking renders** because both are produced from the same backend
+pipeline, so the lips and the voice stay locked without any explicit
+offset tuning.
 
-LiveTalking / MuseTalk inference has a per-frame latency of
-80–200 ms. The `POST /humanaudio` upload + ASR queue adds another
-100–300 ms. The WebRTC pipeline adds another ~50 ms. If the speaker
-plays the audio immediately (`source.start(0)`), the user hears the
-voice before the mouth starts moving — the classic "dubbed movie"
-effect.
+### Why this replaced the old offset knob
 
-Scheduling the speaker start `offsetSeconds` into the future gives the
-avatar backend a head start. The AudioBuffer has already been pushed
-to the bridge *before* `source.start(when)` is called, so the avatar
-backend can begin processing while the speaker waits.
+The previous design used `avatarAudioOffsetMs` to delay
+`source.start(...)` so the avatar backend had a head start before
+sound hit the user's ears. In practice:
 
-### Default: 150 ms
+- MuseTalk / wav2lip inference (80–200 ms) + `POST /humanaudio`
+  upload + ASR queue (100–300 ms) + WebRTC video buffering (50–200 ms)
+  together produced a non-constant total delay.
+- A static offset could not track a varying pipeline, so the lips
+  would either lead or trail the speaker even after tuning.
+- Worse, the WebRTC audio leaking through the avatar's video element
+  produced a **second** voice out of phase with OpenChamber's TTS,
+  which the user perceived as a chaotic overlap.
 
-The default `avatarAudioOffsetMs = 150` (defined in `useConfigStore`).
-Users can tune this in the AvatarPanel (0–2000 ms, step 10). The optimal
-value depends on:
-
-- MuseTalk inference time (GPU vs CPU, model size)
-- Network latency between browser and LiveTalking
-- Audio frame size (longer utterances have higher effective latency
-  because the backend can pipeline)
-
-> See `lipsync.md` for the latency budget table — with HTTP multipart
-> uploads, the recommended starting offset is **300 ms**, not 150 ms.
+Routing the user to a single audio source (LiveTalking's WebRTC track)
+removes the phase problem entirely. The local speaker's exact start
+time no longer matters — it is inaudible.
 
 ### Micro-timing
 
 ```ts
-source.start(ctx.currentTime + offsetSeconds);
+source.start(0);
 ```
 
-`ctx.currentTime` is the `AudioContext`'s clock, not `Date.now()`. This
-means the delay is accurate to the sample frame level — no drift from
-macrotask scheduling or event loop jitter.
+`source.start(0)` schedules playback at `AudioContext` time `0` (i.e.
+immediately on the context's clock). `ctx.currentTime` would be
+equivalent — the speaker is gated to silence, so the choice between
+`0` and `ctx.currentTime` is cosmetic.
 
 ## Failure isolation
 
@@ -113,13 +110,13 @@ measuredly unnecessary given the bridge's contract.
 
 ## Hook dependency
 
-The `useCallback` dependency list on `speak` adds three new selectors
-(line 372):
+The `useCallback` dependency list on `speak` includes the avatar
+selectors that gate the speaker mute:
 
 ```ts
 avatarEnabled,
 avatarServerUrl,
-avatarAudioOffsetMs,
+avatarMuteSpeaker,
 ```
 
 `currentAvatarSessionId` is read via `useConfigStore.getState()` inside
